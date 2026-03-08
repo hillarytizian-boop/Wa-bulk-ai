@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI WhatsApp Bulk Group Creator</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
+<link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+<style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+    body { font-family: 'Inter', sans-serif; background-color: white; }
+    .glass-panel {
+        background: rgba(255,255,255,0.95);
+        backdrop-filter: blur(10px);
+        border:1px solid rgba(255,255,255,0.2);
+        padding:20px;
+        border-radius:12px;
+        margin-bottom:20px;
+    }
+    ::-webkit-scrollbar { width: 8px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+</style>
+</head>
+<body class="bg-gray-50 text-gray-800">
+
+<div class="p-6">
+    <h1 class="text-2xl font-bold mb-4">WA Bulk AI - Dashboard</h1>
+
+    <div class="glass-panel">
+        <h2 class="font-bold mb-2">Bulk Group Creator</h2>
+
+        <label class="block mb-1">Base Group Name</label>
+        <input type="text" id="baseName" placeholder="Marketing Leads" class="border p-2 rounded w-full mb-2">
+
+        <label class="block mb-1">Max Members Per Group</label>
+        <input type="number" id="maxMembers" value="256" class="border p-2 rounded w-full mb-2">
+
+        <label class="block mb-1">Paste Numbers (one per line)</label>
+        <textarea id="numbersInput" rows="6" class="border p-2 rounded w-full mb-2"></textarea>
+
+        <div class="flex justify-between items-center">
+            <span>Numbers detected: <span id="count-display">0</span></span>
+            <button onclick="processNumbers()" class="bg-emerald-500 text-white px-4 py-2 rounded">Analyze</button>
+        </div>
+
+        <button onclick="startAutomation()" class="mt-4 bg-blue-600 text-white px-6 py-3 rounded font-bold">Start Automation</button>
+        <button onclick="downloadReport()" class="mt-2 bg-gray-600 text-white px-4 py-2 rounded">Download Report</button>
+    </div>
+
+    <div class="glass-panel">
+        <h2 class="font-bold mb-2">Activity Chart</h2>
+        <canvas id="activityChart" height="100"></canvas>
+    </div>
+</div>
+
+<script>
+// --- Frontend JS ---
+let numbersList = [];
+let createdGroups = [];
+
+// Process input numbers
+function processNumbers(){
+    let raw = document.getElementById("numbersInput").value;
+    numbersList = raw.split("\n").map(n=>n.trim()).filter(n=>n.length>5);
+    document.getElementById("count-display").innerText = numbersList.length;
+}
+
+// Start automation and call backend
+async function startAutomation(){
+    let baseName = document.getElementById("baseName").value;
+    let maxMembers = parseInt(document.getElementById("maxMembers").value);
+    if(numbersList.length === 0){ alert("No numbers loaded!"); return; }
+
+    try{
+        let res = await fetch("http://localhost:3000/create-groups", {
+            method:"POST",
+            headers:{ "Content-Type":"application/json" },
+            body: JSON.stringify({ baseName, numbers: numbersList, maxMembers })
+        });
+        let data = await res.json();
+        alert("Automation finished: " + data.groupsCreated.length + " groups processed");
+        console.log(data.groupsCreated);
+        createdGroups = data.groupsCreated;
+    }catch(e){ console.error(e); alert("Error connecting to backend"); }
+}
+
+// Download report of created groups
+function downloadReport(){
+    if(createdGroups.length === 0){ alert("No groups created yet!"); return; }
+    let data = "Created Groups\n\n" + createdGroups.join("\n");
+    let blob = new Blob([data], { type: "text/plain" });
+    let a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "groups-report.txt";
+    a.click();
+}
+
+// Chart
+const ctx = document.getElementById('activityChart').getContext('2d');
+new Chart(ctx, {
+    type: 'line',
+    data: {
+        labels: ['1h','2h','3h','4h','5h','6h','7h','8h'],
+        datasets: [{
+            label:'Groups Created',
+            data:[2,4,5,8,12,14,18,22],
+            borderWidth:2,
+            tension:0.4
+        }]
+    },
+    options:{ responsive:true, plugins:{ legend:{display:false} } }
+});
+</script>
+
+</body>
+</html>
