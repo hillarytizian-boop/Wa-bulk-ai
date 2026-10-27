@@ -200,17 +200,18 @@ try {
   console.error('[boot] failed to create the app:', err);
 }
 
-function handler(req, res) {
-  if (bootError) {
-    res.statusCode = 500;
-    res.setHeader('content-type', 'application/json');
-    return res.end(JSON.stringify({ error: 'boot_failed', message: bootError.message }));
-  }
-  return bootApp(req, res);
+function bootFailure(req, res) {
+  res.statusCode = 500;
+  res.setHeader('content-type', 'application/json');
+  return res.end(JSON.stringify({ error: 'boot_failed', message: bootError.message }));
 }
-handler.createApp = createApp;
-handler.seedAdmin = seedAdmin;
-handler.migrate = migrate;
 
-module.exports = handler;
+// Export the Express app itself: Vercel's serverless wrappers accept "a function or a
+// server", and an Express app is both (it is a request listener that also has listen()).
+const entry = bootApp || bootFailure;
+entry.createApp = createApp;
+entry.seedAdmin = seedAdmin;
+entry.migrate = migrate;
+
+module.exports = entry;
 
