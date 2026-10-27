@@ -74,8 +74,16 @@ Magic values in the order "link" trigger edge cases: `REJECT` (provider 400), `F
 creates the order but the response is lost), `PARTIAL` (40 % undelivered), `CANCELME` (cancellable).
 
 ```bash
-npm test        # 21 tests: pricing, ordering, idempotent recovery, refunds, M-Pesa, ledger
+npm test
 ```
+
+- `test/engine.test.js` — **21 tests**: KES pricing + fee, ordering, idempotent recovery, refunds,
+  M-Pesa crediting, ledger reconciliation.
+- `test/security.test.js` — **17 tests**: bcrypt-only password storage, HttpOnly/SameSite=Strict
+  cookies, account-enumeration resistance, per-account login throttling, CSRF origin + JSON-body
+  enforcement, authz boundaries (anon 401 / customer 403 / admin 200), session revocation on
+  password change and logout-all, tampered-cookie rejection, provider key never exposed, audit log,
+  M-Pesa callback secret, top-up validation.
 
 The test suite needs the compiled `better-sqlite3` native module (`npm install`).
 
@@ -149,16 +157,25 @@ Production checklist:
 
 ## Security notes
 
-- Provider key lives only in server env vars; the browser only ever sees KES prices.
-- Sessions: signed JWT in an **httpOnly** cookie (`secure` in production, `sameSite=lax`).
-- Passwords: **bcrypt** (cost 10), constant-time-ish login (dummy hash comparison).
-- **helmet** with CSP, **express-rate-limit** on the API, auth and top-up endpoints.
-- All provider-supplied text (service names, descriptions) is inserted with `textContent` /
-  `createTextNode` — never `innerHTML`.
-- Money is integer cents; every balance change goes through a SQLite transaction and a
-  `transactions` ledger row.
+| Area | What the code does |
+|---|---|
+| Provider key | Lives only in server env vars. No route ever returns it; the API exposes KES prices only (`test/security.test.js` asserts this). |
+| Admin password | From `.env` (gitignored) or `npm run admin:password`; bcrypt cost 10–12; never logged; rotating it bumps `token_version` and signs out every session. |
+| Sessions | Signed JWT (HS256, algorithms pinned) in an **httpOnly**, **SameSite=Strict**, `Secure`-in-production cookie; server-side revocation via `users.token_version`. |
+| Passwords | bcrypt, 8–72 bytes (bcrypt truncation limit enforced), login compares a dummy hash for unknown emails so timing does not reveal accounts. |
+| Brute force | IP limiter on `/api/auth/*` (20 / 15 min), plus a per-account failure throttle (6 failures / 15 min) so spraying one account or many accounts from one IP is bounded. Admin routes have their own limiter. |
+| CSRF | `SameSite=Strict` cookies + Origin allow-list + JSON-only bodies for state-changing requests (`src/security.js`). Simple HTML-form CSRF is impossible. |
+| XSS | All provider/customer text goes through `textContent`/`createTextNode`; strict CSP (`default-src 'self'`, `script-src 'self'`, `object-src 'none'`, `base-uri 'none'`, `form-action 'self'`, `script-src-attr 'none'`). |
+| Clickjacking | `frame-ancestors 'none'` + `X-Frame-Options: DENY` in production (`ALLOW_IFRAME=true` only for dev previews). |
+| Transport | `helmet` (nosniff, no-referrer, HSTS when `COOKIE_SECURE=true`), `x-powered-by` off, API responses `Cache-Control: no-store`. |
+| M-Pesa callback | Secret path compared in constant time; a callback never credits — every payment is confirmed through the STK **query** API, credited exactly once inside a transaction. |
+| Authorization | Every order/refill/cancel/top-up route checks ownership; admin routes require `is_admin`; wallet balance can never go negative. |
+| Audit | Privileged actions (wallet adjustments, refunds, retries, pricing changes) are appended to `audit_log` with actor, IP and time, readable at `GET /api/admin/audit` and shown in Admin. |
+| Money | Integer KES cents; every balance change runs in a SQLite transaction with a ledger row. |
+| Deploy | `.env` gitignored (secrets never in git history), JSON body limit 100 kb, rate limits everywhere, `/healthz` for uptime checks. |
 
----
+Still recommended for a live launch: put the site behind HTTPS (set `COOKIE_SECURE=true`,
+`TRUST_PROXY=true`), add email verification/password reset, and back up the SQLite file.
 
 ## Known limits / next steps
 
@@ -185,7 +202,10 @@ src/catalog.js        10-minute services cache
 src/orders.js         order engine: charge, submit, poll, refund, reconcile
 src/mpesa.js          Daraja STK Push, query, credit-once reconciliation
 src/jobs.js           background pollers
+src/security.js       CSRF/origin checks, no-store headers
+src/audit.js          audit log for privileged actions
 src/routes/           auth, shop, wallet, admin
+scripts/              admin password rotation
 public/               the website (no build step)
-test/                 mock provider + engine tests
+test/                 mock provider, engine tests, security tests
 ```

@@ -3,6 +3,7 @@ const db = require('../db');
 const smm = require('../smm');
 const pricing = require('../pricing');
 const orders = require('../orders');
+const audit = require('../audit');
 const { HttpError, wrap } = require('../errors');
 const { toCents, microsToUsd } = require('../money');
 const { requireAuth, requireAdmin } = require('./auth');
@@ -79,6 +80,9 @@ router.post('/settings', (req, res) => {
     pricing.setFeeKes(f);
   }
   const s = pricing.getSettings();
+  audit.record(req, 'pricing.update', {
+    detail: `markup=${s.markup} kes_per_usd=${s.kesPerUsd} fee_kes=${s.feeKes}`,
+  });
   res.json({ settings: { markup: s.markup, kes_per_usd: s.kesPerUsd, fee_kes: s.feeKes } });
 });
 
@@ -119,6 +123,7 @@ router.post('/users/:id/credit', (req, res) => {
     );
   })();
   const u = db.prepare('SELECT balance_cents FROM users WHERE id = ?').get(id);
+  audit.record(req, 'wallet.adjust', { target: `user:${id}`, detail: `${amountKes} KES - ${note}` });
   res.json({ balance_cents: u.balance_cents });
 });
 
@@ -157,6 +162,7 @@ router.post(
     db.prepare("UPDATE orders SET status = 'submitting', attempts = 0, updated_at = 0 WHERE id = ?").run(id);
     const result = await orders.submitOrder(id);
     const fresh = orders.getOrder(id);
+    audit.record(req, 'order.retry', { target: `order:${id}`, detail: fresh.status });
     res.json({ status: fresh.status, error: result.failed ? result.message : fresh.error || null });
   })
 );
@@ -167,7 +173,15 @@ router.post('/orders/:id/refund', (req, res) => {
   const o = orders.getOrder(id);
   if (!o || !['needs_review', 'submitting'].includes(o.status)) throw new HttpError(400, 'Only unconfirmed orders can be refunded here');
   orders.failOrder(id, 'Refunded by admin');
+  audit.record(req, 'order.refund', { target: `order:${id}`, detail: `price_cents=${o.price_cents}` });
   res.json({ ok: true, order: orders.present(orders.getOrder(id)) });
+});
+
+// Read-only audit trail of privileged actions.
+router.get('/audit', (_req, res) => {
+  res.json({
+    entries: audit.recent(100).map((e) => ({ ...e, created_at: iso(e.created_at) })),
+  });
 });
 
 module.exports = router;

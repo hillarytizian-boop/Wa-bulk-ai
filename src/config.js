@@ -27,6 +27,11 @@ module.exports = {
   publicUrl: (process.env.PUBLIC_URL || `http://localhost:${port}`).replace(/\/$/, ''),
   trustProxy: bool(process.env.TRUST_PROXY, false),
   cookieSecure: bool(process.env.COOKIE_SECURE, false),
+  // The Arena preview and most local setups render the site in an iframe. Production defaults to
+  // refusing framing; set ALLOW_IFRAME=true only if you really embed the panel somewhere.
+  allowIframe: bool(process.env.ALLOW_IFRAME, !isProd),
+  sessionDays: num(process.env.SESSION_DAYS, 14),
+  authRateLimit: num(process.env.AUTH_RATE_LIMIT, 20),
   jwtSecret,
   dbPath: process.env.DATABASE_PATH || path.join(__dirname, '..', 'data', 'store.db'),
 
