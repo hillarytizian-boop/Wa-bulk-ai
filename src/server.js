@@ -187,18 +187,30 @@ if (require.main === module && !isServerless) {
   });
 }
 
-// Vercel's Node preset may pick this file as the serverless entrypoint (it looks for
-// server.js/app.js/index.js), so the export is a callable (req, res) handler with the
-// module's helpers attached. api/index.js re-exports it unchanged.
-let cachedApp = null;
+// Vercel's Node preset selects this file as the deployment entrypoint (it scans for
+// server/app/index files that import express), so the export must be a request handler.
+// The app is built once per cold start; if that fails the failure is reported as JSON
+// instead of an opaque FUNCTION_INVOCATION_FAILED.
+let bootApp = null;
+let bootError = null;
+try {
+  bootApp = createApp();
+} catch (err) {
+  bootError = err;
+  console.error('[boot] failed to create the app:', err);
+}
+
 function handler(req, res) {
-  if (!cachedApp) cachedApp = createApp();
-  return cachedApp(req, res);
+  if (bootError) {
+    res.statusCode = 500;
+    res.setHeader('content-type', 'application/json');
+    return res.end(JSON.stringify({ error: 'boot_failed', message: bootError.message }));
+  }
+  return bootApp(req, res);
 }
 handler.createApp = createApp;
 handler.seedAdmin = seedAdmin;
 handler.migrate = migrate;
 
 module.exports = handler;
-module.exports.default = handler;
 
