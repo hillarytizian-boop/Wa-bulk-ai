@@ -187,4 +187,18 @@ if (require.main === module && !isServerless) {
   });
 }
 
-module.exports = { createApp, seedAdmin, migrate };
+// Vercel's Node preset may pick this file as the serverless entrypoint (it looks for
+// server.js/app.js/index.js), so the export is a callable (req, res) handler with the
+// module's helpers attached. api/index.js re-exports it unchanged.
+let cachedApp = null;
+function handler(req, res) {
+  if (!cachedApp) cachedApp = createApp();
+  return cachedApp(req, res);
+}
+handler.createApp = createApp;
+handler.seedAdmin = seedAdmin;
+handler.migrate = migrate;
+
+module.exports = handler;
+module.exports.default = handler;
+
