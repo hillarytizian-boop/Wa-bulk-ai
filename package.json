@@ -4,8 +4,8 @@
   "description": "Kenyan SMM reseller panel (KES) powered by the smm.africa API v3",
   "main": "api/index.js",
   "scripts": {
-    "start": "node src/bootstrap.js",
-    "dev": "node --watch src/bootstrap.js",
+    "start": "node src/main.js",
+    "dev": "node --watch src/main.js",
     "mock": "node test/mock-provider.js",
     "test": "node test/engine.test.js && node test/security.test.js",
     "admin:password": "node scripts/set-admin-password.js",

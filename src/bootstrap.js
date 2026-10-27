@@ -167,51 +167,12 @@ async function migrate() {
   await pricing.initSettings();
 }
 
-if (require.main === module && !isServerless) {
-  (async () => {
-    await migrate();
-    if (!config.smm.key) console.warn('[config] SMM_API_KEY is not set - the provider API will not work.');
-    if (!/^https?:/.test(config.publicUrl)) {
-      console.warn('[config] PUBLIC_URL should be an absolute URL (M-Pesa callbacks use it).');
-    }
-    if (config.isProd && !config.cookieSecure) console.warn('[config] COOKIE_SECURE should be true in production (HTTPS).');
-    await seedAdmin();
-    const app = createApp();
-    app.listen(config.port, '0.0.0.0', () => {
-      console.log(`${config.siteName} running on http://localhost:${config.port} (db: ${db.dialect})`);
-      jobs.start();
-    });
-  })().catch((err) => {
-    console.error('[startup]', err);
-    process.exit(1);
-  });
-}
+// The module exports the configured Express app. Starting a listener, seeding the admin and
+// running migrations live in src/main.js so that importing this file never has side effects
+// (a serverless entrypoint imports it on every cold start, where listening is fatal).
+const app = createApp();
+app.createApp = createApp;
+app.seedAdmin = seedAdmin;
+app.migrate = migrate;
 
-// Vercel's Node preset selects this file as the deployment entrypoint (it scans for
-// server/app/index files that import express), so the export must be a request handler.
-// The app is built once per cold start; if that fails the failure is reported as JSON
-// instead of an opaque FUNCTION_INVOCATION_FAILED.
-let bootApp = null;
-let bootError = null;
-try {
-  bootApp = createApp();
-} catch (err) {
-  bootError = err;
-  console.error('[boot] failed to create the app:', err);
-}
-
-function bootFailure(req, res) {
-  res.statusCode = 500;
-  res.setHeader('content-type', 'application/json');
-  return res.end(JSON.stringify({ error: 'boot_failed', message: bootError.message }));
-}
-
-// Export the Express app itself: Vercel's serverless wrappers accept "a function or a
-// server", and an Express app is both (it is a request listener that also has listen()).
-const entry = bootApp || bootFailure;
-entry.createApp = createApp;
-entry.seedAdmin = seedAdmin;
-entry.migrate = migrate;
-
-module.exports = entry;
-
+module.exports = app;
