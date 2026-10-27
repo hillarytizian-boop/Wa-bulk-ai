@@ -125,18 +125,26 @@ router.post(
   orderLimiter,
   wrap(async (req, res) => {
     const order = await orders.placeOrder(req.user.id, req.body || {});
-    const user = db.prepare('SELECT balance_cents FROM users WHERE id = ?').get(req.user.id);
+    const user = await db.one('SELECT balance_cents FROM users WHERE id = $1', [req.user.id]);
     res.status(201).json({ order: orders.present(order), balance_cents: user.balance_cents });
   })
 );
 
-router.get('/orders', requireAuth, (req, res) => {
-  const before = Number(req.query.before) || Number.MAX_SAFE_INTEGER;
-  const rows = db
-    .prepare('SELECT * FROM orders WHERE user_id = ? AND id < ? ORDER BY id DESC LIMIT 50')
-    .all(req.user.id, before);
-  res.json({ orders: rows.map(orders.present) });
-});
+router.get(
+  '/orders',
+  requireAuth,
+  wrap(async (req, res) => {
+    // Serverless deployments have no long-running timer, so a customer's active orders are polled
+    // here (throttled by last_polled_at, capped per request). See src/jobs.js for the cron sweep.
+    if (req.query.sync !== '0') await orders.pollUserActive(req.user.id, 5).catch((err) => console.warn('[orders] lazy poll:', err.message));
+    const before = Number(req.query.before) || Number.MAX_SAFE_INTEGER;
+    const rows = await db.all('SELECT * FROM orders WHERE user_id = $1 AND id < $2 ORDER BY id DESC LIMIT 50', [
+      req.user.id,
+      before,
+    ]);
+    res.json({ orders: rows.map(orders.present) });
+  })
+);
 
 // Manual refresh, rate limited to once every 15s per order.
 const lastRefresh = new Map();

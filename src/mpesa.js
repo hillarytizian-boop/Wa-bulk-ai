@@ -101,26 +101,32 @@ async function queryStatus(checkoutRequestId) {
   return String(data.ResultCode) === '0' ? 'paid' : 'failed';
 }
 
-/** Credit a paid top-up exactly once (guarded by the topup status inside a transaction). */
-const credit = db.transaction((topupId, receipt) => {
-  const t = db.prepare('SELECT * FROM topups WHERE id = ?').get(topupId);
-  if (!t || t.status !== 'pending') return false;
-  db.prepare("UPDATE topups SET status = 'paid', receipt = ?, updated_at = ? WHERE id = ?").run(receipt || null, now(), topupId);
-  db.prepare('UPDATE users SET balance_cents = balance_cents + ? WHERE id = ?').run(t.credited_cents, t.user_id);
-  db.prepare('INSERT INTO transactions (user_id, amount_cents, type, ref, note, created_at) VALUES (?,?,?,?,?,?)').run(
-    t.user_id,
-    t.credited_cents,
-    'topup',
-    `topup:${topupId}`,
-    `M-Pesa KES ${t.amount_kes}${receipt ? ` (${receipt})` : ''}`,
-    now()
-  );
-  return true;
-});
+/** Credit a paid top-up exactly once (guarded by the row lock + the topup status). */
+async function credit(topupId, receipt) {
+  return db.tx(async (t) => {
+    const row = await t.one('SELECT * FROM topups WHERE id = $1 FOR UPDATE', [topupId]);
+    if (!row || row.status !== 'pending') return false;
+    await t.run("UPDATE topups SET status = 'paid', receipt = $1, updated_at = $2 WHERE id = $3 AND status = 'pending'", [
+      receipt || null,
+      now(),
+      topupId,
+    ]);
+    await t.run('UPDATE users SET balance_cents = balance_cents + $1 WHERE id = $2', [row.credited_cents, row.user_id]);
+    await t.run('INSERT INTO transactions (user_id, amount_cents, type, ref, note, created_at) VALUES ($1,$2,$3,$4,$5,$6)', [
+      row.user_id,
+      Number(row.credited_cents),
+      'topup',
+      `topup:${topupId}`,
+      `M-Pesa KES ${row.amount_kes}${receipt ? ` (${receipt})` : ''}`,
+      now(),
+    ]);
+    return true;
+  });
+}
 
 /** Confirm one pending top-up with Daraja's query API, then credit it once. */
 async function reconcileTopup(topupId, receipt) {
-  const t = db.prepare('SELECT * FROM topups WHERE id = ?').get(topupId);
+  const t = await db.one('SELECT * FROM topups WHERE id = $1', [topupId]);
   if (!t || t.status !== 'pending') return t && t.status;
 
   let result;
@@ -132,25 +138,23 @@ async function reconcileTopup(topupId, receipt) {
   }
 
   if (result === 'paid') {
-    credit(topupId, receipt);
+    await credit(topupId, receipt);
     return 'paid';
   }
-  if (result === 'failed' || now() - t.created_at > 30 * 60) {
-    db.prepare("UPDATE topups SET status = 'failed', updated_at = ? WHERE id = ? AND status = 'pending'").run(now(), topupId);
+  if (result === 'failed' || now() - Number(t.created_at) > 30 * 60) {
+    await db.run("UPDATE topups SET status = 'failed', updated_at = $1 WHERE id = $2 AND status = 'pending'", [now(), topupId]);
     return 'failed';
   }
   return 'pending';
 }
 
-/** Background reconciliation for payments whose callback never arrived. */
+/** Reconciliation for payments whose callback never arrived (cron / background job). */
 async function reconcilePending(limit = 20) {
-  const rows = db
-    .prepare("SELECT id FROM topups WHERE status = 'pending' AND created_at <= ? ORDER BY id LIMIT ?")
-    .all(now() - 20, limit);
-  for (const r of rows) {
-    // eslint-disable-next-line no-await-in-loop
-    await reconcileTopup(r.id);
-  }
+  const rows = await db.all("SELECT id FROM topups WHERE status = 'pending' AND created_at <= $1 ORDER BY id LIMIT $2", [
+    now() - 20,
+    limit,
+  ]);
+  for (const r of rows) await reconcileTopup(r.id);
   return rows.length;
 }
 

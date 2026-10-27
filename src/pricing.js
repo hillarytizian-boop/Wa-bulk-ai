@@ -2,49 +2,68 @@
 //
 //   customer price = (provider USD rate x (1 + markup) x KES_PER_USD) + FEE_KES
 //
-// The +FEE_KES applies to every price on the site: the per-1000 rate in the catalog, the
-// dynamic order form and the order total. Order total for per-1000 services is
+// The +FEE_KES applies to every price on the site: the per-1000 rate in the catalog, the dynamic
+// order form and the order total. Order total for per-1000 services is
 // (rate_kes + fee) x quantity / 1000; flat/package services are priced as rate_kes + fee per order.
 //
-// Rates are converted to integer KES cents once, then all order maths stays in integers.
+// Settings live in the `settings` table and are cached in memory: reads are synchronous (pure
+// integer maths over the cached values), writes refresh the cache. `ensureSettings()` must resolve
+// once before the first read - the server awaits it as middleware.
 const db = require('./db');
 const config = require('./config');
 const { toCents, ceilScaled } = require('./money');
 const { isFlat } = require('./serviceTypes');
 
 const DEFAULTS = {
-  markup: String(config.pricing.markup),
-  kes_per_usd: String(config.pricing.kesPerUsd),
-  fee_kes: String(config.pricing.feeKes),
+  markup: config.pricing.markup,
+  kes_per_usd: config.pricing.kesPerUsd,
+  fee_kes: config.pricing.feeKes,
 };
 
-/** Insert default settings once, so the admin panel always has values to edit. */
-function initSettings() {
-  const insert = db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING');
-  for (const [k, v] of Object.entries(DEFAULTS)) insert.run(k, v);
+let cache = null; // { markup, kesPerUsd, feeKes, feeCents }
+let loading = null;
+
+function toSettings(values) {
+  const markup = Number.isFinite(values.markup) && values.markup >= 0 ? values.markup : DEFAULTS.markup;
+  const kesPerUsd = Number.isFinite(values.kes_per_usd) && values.kes_per_usd > 0 ? values.kes_per_usd : DEFAULTS.kes_per_usd;
+  const feeKes = Number.isFinite(values.fee_kes) && values.fee_kes >= 0 ? values.fee_kes : DEFAULTS.fee_kes;
+  return { markup, kesPerUsd, feeKes, feeCents: toCents(feeKes) };
 }
 
-function readSetting(key, fallback) {
-  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
-  const n = row ? Number(row.value) : NaN;
-  return Number.isFinite(n) ? n : fallback;
+/** Create any missing settings rows, then load them into the cache. Safe to call repeatedly. */
+async function initSettings() {
+  for (const [key, value] of Object.entries(DEFAULTS)) {
+    await db.run('INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO NOTHING', [key, String(value)]);
+  }
+  const rows = await db.all('SELECT key, value FROM settings');
+  const map = {};
+  for (const row of rows) {
+    const n = Number(row.value);
+    if (Number.isFinite(n)) map[row.key] = n;
+  }
+  cache = toSettings(map);
+  return cache;
 }
 
+/** Memoised initialisation for request handlers. */
+function ensureSettings() {
+  if (cache) return Promise.resolve(cache);
+  if (!loading) loading = initSettings().finally(() => { loading = null; });
+  return loading;
+}
+
+/** Synchronous read of the cached settings (falls back to env defaults before init). */
 function getSettings() {
-  const markup = readSetting('markup', config.pricing.markup);
-  const kesPerUsd = readSetting('kes_per_usd', config.pricing.kesPerUsd);
-  return {
-    markup: markup >= 0 ? markup : config.pricing.markup,
-    kesPerUsd: kesPerUsd > 0 ? kesPerUsd : config.pricing.kesPerUsd,
-    feeKes: readSetting('fee_kes', config.pricing.feeKes),
-    feeCents: toCents(readSetting('fee_kes', config.pricing.feeKes)),
-  };
+  return cache || toSettings(DEFAULTS);
 }
 
-const writeSetting = (key, value) =>
-  db
-    .prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
-    .run(key, String(value));
+async function writeSetting(key, value) {
+  await db.run('INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = excluded.value', [
+    key,
+    String(value),
+  ]);
+  await initSettings();
+}
 
 const setMarkup = (markup) => writeSetting('markup', markup);
 const setKesPerUsd = (rate) => writeSetting('kes_per_usd', rate);
@@ -57,8 +76,8 @@ function rateCentsPer1000(providerRateUsd, settings = getSettings()) {
 }
 
 /**
- * Customer rate shown in the catalog, in KES (per 1000 units, or per order for flat types).
- * This is the provider rate x (1 + markup) x KES_PER_USD, plus the fixed fee.
+ * Customer rate shown in the catalog, in KES (per 1000 units, or per order for flat types):
+ * provider rate x (1 + markup) x KES_PER_USD, plus the fixed fee.
  */
 function sellRateKes(providerRateUsd, settings = getSettings()) {
   return rateCentsPer1000(providerRateUsd, settings) / 100;
@@ -91,6 +110,7 @@ function priceCentsFromCharged(chargedUsd, { type, quantity }, settings = getSet
 
 module.exports = {
   initSettings,
+  ensureSettings,
   getSettings,
   setMarkup,
   setKesPerUsd,
