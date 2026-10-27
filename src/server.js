@@ -4,6 +4,7 @@ const compression = require('compression');
 const cookieParser = require('cookie-parser');
 const rateLimit = require('express-rate-limit');
 const bcrypt = require('bcryptjs');
+const fs = require('fs');
 const path = require('path');
 
 const config = require('./config');
@@ -106,9 +107,17 @@ function createApp() {
   app.use('/api', require('./routes/shop'));
   app.use('/api', (_req, res) => res.status(404).json({ error: 'Not found' }));
 
-  // Static site: Vercel serves public/ directly (see vercel.json); this path is for Docker/VPS.
+  // Static site. Paths are checked in order so the same code works when run from the repo
+  // (Docker/VPS), from the Vercel build root, and from inside a bundled serverless function
+  // where the assets sit next to the function instead of one directory up.
+  const staticDir = [
+    path.join(__dirname, '..', 'public'),
+    path.join(__dirname, 'public'),
+    path.join(process.cwd(), 'public'),
+  ].find((dir) => fs.existsSync(path.join(dir, 'index.html')));
+
   app.use(
-    express.static(path.join(__dirname, '..', 'public'), {
+    express.static(staticDir || path.join(__dirname, '..', 'public'), {
       maxAge: config.isProd ? '1h' : 0,
       setHeaders: (res, filePath) => {
         if (filePath.endsWith('index.html')) res.setHeader('Cache-Control', 'no-cache');
