@@ -1,2 +1,2 @@
 // Vercel catch-all: maps /api/<anything> to the app without needing a rewrite rule.
-module.exports = require('../src/bootstrap');
+module.exports = require('./index.js');
