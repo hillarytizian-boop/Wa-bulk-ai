@@ -7,7 +7,7 @@ let loadError = null;
 module.exports = function handler(req, res) {
   if (!app && !loadError) {
     try {
-      app = require('../src/bootstrap');
+      app = require('../src/app');
     } catch (err) {
       loadError = err;
       console.error('[api] failed to load the app:', err);
