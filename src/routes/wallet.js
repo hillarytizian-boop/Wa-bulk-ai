@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const express = require('express');
 const rateLimit = require('express-rate-limit');
 const db = require('../db');
@@ -69,8 +70,14 @@ router.post(
 // Daraja posts the result here. The secret path segment keeps strangers out, and every payment is
 // still confirmed with Daraja's STK query API before the wallet is credited (exactly once).
 router.post('/mpesa/callback/:secret', (req, res) => {
+  // Always answer 200 so Daraja stops retrying, but only act on a constant-time secret match.
   res.json({ ResultCode: 0, ResultDesc: 'Accepted' });
-  if (req.params.secret !== mpesa.callbackSecret()) return;
+  const given = Buffer.from(String(req.params.secret || ''));
+  const expected = Buffer.from(mpesa.callbackSecret());
+  if (given.length !== expected.length || !crypto.timingSafeEqual(given, expected)) {
+    console.warn('[mpesa] callback rejected: bad secret');
+    return;
+  }
   const cb = req.body && req.body.Body && req.body.Body.stkCallback;
   if (!cb || !cb.CheckoutRequestID) return;
   const t = db.prepare('SELECT id FROM topups WHERE checkout_request_id = ?').get(String(cb.CheckoutRequestID));
