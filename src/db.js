@@ -227,14 +227,60 @@ function makePostgres(databaseUrl) {
   types.setTypeParser(20, (value) => (value == null ? null : Number(value)));
   types.setTypeParser(1700, (value) => (value == null ? null : Number(value))); // NUMERIC
 
-  const pool = new Pool({
-    connectionString: databaseUrl,
-    ssl: /localhost|127\.0\.0\.1/.test(databaseUrl) ? false : { rejectUnauthorized: false },
-    max: Number(process.env.PG_POOL_MAX || 5),
-    idleTimeoutMillis: 10000,
-    connectionTimeoutMillis: 10000,
-  });
-  pool.on('error', (err) => console.error('[db] idle client error:', err.message));
+  // Supabase exposes several pooler hosts per region and only one owns this project, so
+  // DATABASE_FALLBACK_URLS may list alternatives. The first candidate that answers SELECT 1 wins
+  // (resolved once per cold start).
+  const candidates = [databaseUrl, ...String(process.env.DATABASE_FALLBACK_URLS || '').split(',')]
+    .map((u) => (u || '').trim())
+    .filter(Boolean);
+
+  const newPool = (url) => {
+    const p = new Pool({
+      connectionString: url,
+      ssl: /localhost|127\.0\.0\.1/.test(url) ? false : { rejectUnauthorized: false },
+      max: Number(process.env.PG_POOL_MAX || 5),
+      idleTimeoutMillis: 10000,
+      connectionTimeoutMillis: 10000,
+      // pgbouncer (transaction pooler) does not support named prepared statements
+      statement_timeout: Number(process.env.PG_STATEMENT_TIMEOUT_MS || 20000),
+    });
+    p.on('error', (err) => console.error('[db] idle client error:', err.message));
+    return p;
+  };
+
+  let pool = null;
+  let resolving = null;
+  const ensurePool = () => {
+    if (pool) return Promise.resolve(pool);
+    if (resolving) return resolving;
+    resolving = (async () => {
+      let lastErr;
+      for (const url of candidates) {
+        const candidate = newPool(url);
+        try {
+          const client = await candidate.connect();
+          await client.query('SELECT 1');
+          client.release();
+          pool = candidate;
+          console.log(`[db] connected via ${url.replace(/:[^:@/]+@/, ':***@')}`);
+          return pool;
+        } catch (err) {
+          lastErr = err;
+          console.warn(`[db] candidate failed (${url.replace(/:[^:@/]+@/, ':***@')}): ${err.message}`);
+          await candidate.end().catch(() => {});
+        }
+      }
+      resolving = null;
+      throw lastErr || new Error('No DATABASE_URL candidate could connect');
+    })();
+    return resolving;
+  };
+
+  // A tiny wrapper that behaves like a client but resolves the pool first.
+  const lazyClient = {
+    query: async (text, params = []) => (await ensurePool()).query(text, params),
+    connect: async () => (await ensurePool()).connect(),
+  };
 
   const bind = (client) => ({
     query: async (text, params = []) => client.query(text, params),
@@ -244,7 +290,7 @@ function makePostgres(databaseUrl) {
   });
 
   const tx = async (fn) => {
-    const client = await pool.connect();
+    const client = await (await ensurePool()).connect();
     try {
       await client.query('BEGIN');
       const result = await fn(bind(client));
@@ -262,16 +308,18 @@ function makePostgres(databaseUrl) {
     }
   };
 
-  const api = bind(pool);
+  const api = bind(lazyClient);
   return {
     dialect: 'postgres',
     ...api,
     tx,
     initSchema: async () => {
-      await pool.query(renderSchema('postgres'));
+      await lazyClient.query(renderSchema('postgres'));
     },
-    close: async () => pool.end(),
-    pool,
+    resolve: () => ensurePool(),
+    close: async () => {
+      if (pool) await pool.end();
+    },
   };
 }
 
