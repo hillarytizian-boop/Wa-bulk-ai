@@ -37,9 +37,10 @@ async function test(name, fn) {
 
   const pricing = require('../src/pricing');
   const db = require('../src/db');
-  const { createApp, seedAdmin } = require('../src/server');
-  pricing.initSettings();
-  seedAdmin({ log: () => {} });
+  const raw = db.raw;
+  const { createApp, seedAdmin, migrate } = require('../src/server');
+  await migrate();
+  await seedAdmin({ log: () => {} });
 
   const app = createApp();
   const server = http.createServer(app);
@@ -76,12 +77,12 @@ async function test(name, fn) {
   console.log('security tests');
 
   await test('admin password is stored as a bcrypt hash, never in plaintext', () => {
-    const row = db.prepare('SELECT * FROM users WHERE email = ?').get(ADMIN_EMAIL);
+    const row = raw.prepare('SELECT * FROM users WHERE email = ?').get(ADMIN_EMAIL);
     assert.ok(row, 'admin row exists');
     assert.equal(row.is_admin, 1);
     assert.match(row.password_hash, /^\$2[aby]\$/);
     assert.ok(!row.password_hash.includes(ADMIN_PASSWORD));
-    const dump = JSON.stringify(db.prepare('SELECT * FROM users').all());
+    const dump = JSON.stringify(raw.prepare('SELECT * FROM users').all());
     assert.ok(!dump.includes(ADMIN_PASSWORD), 'no table contains the plaintext password');
   });
 
@@ -104,7 +105,7 @@ async function test(name, fn) {
 
   await test('repeated failures for one account are throttled (429)', async () => {
     const email = 'throttle@panel.test';
-    db.prepare("INSERT INTO users (email, password_hash, created_at) VALUES (?,'x',?)").run(email, 1);
+    raw.prepare("INSERT INTO users (email, password_hash, created_at) VALUES (?,'x',?)").run(email, 1);
     let last = 0;
     for (let i = 0; i < 8; i++) last = (await loginAs(email, 'wrong-pass')).status;
     assert.equal(last, 429);
@@ -196,7 +197,7 @@ async function test(name, fn) {
     assert.equal(current.status, 200, 'the device that changed it stays signed in');
 
     // restore for later tests
-    db.prepare('UPDATE users SET password_hash = ? WHERE email = ?').run(
+    raw.prepare('UPDATE users SET password_hash = ? WHERE email = ?').run(
       require('bcryptjs').hashSync(ADMIN_PASSWORD, 10),
       ADMIN_EMAIL
     );
@@ -240,7 +241,7 @@ async function test(name, fn) {
 
   await test('admin actions are written to the audit log', async () => {
     const admin = await loginAs(ADMIN_EMAIL, ADMIN_PASSWORD);
-    const target = db.prepare("INSERT INTO users (email, password_hash, created_at) VALUES ('audit@panel.test','x',?) RETURNING id").get(1);
+    const target = raw.prepare("INSERT INTO users (email, password_hash, created_at) VALUES ('audit@panel.test','x',?) RETURNING id").get(1);
     const credit = await call(`/api/admin/users/${target.id}/credit`, {
       method: 'POST',
       body: { amount_kes: 250, note: 'audit test' },
@@ -253,13 +254,13 @@ async function test(name, fn) {
   });
 
   await test('the M-Pesa callback ignores requests with a wrong secret', async () => {
-    const topupsBefore = db.prepare('SELECT COUNT(*) AS n FROM topups').get().n;
+    const topupsBefore = raw.prepare('SELECT COUNT(*) AS n FROM topups').get().n;
     const res = await call('/api/wallet/mpesa/callback/wrong-secret', {
       method: 'POST',
       body: { Body: { stkCallback: { CheckoutRequestID: 'nope', ResultCode: 0 } } },
     });
     assert.equal(res.status, 200); // always ack Daraja
-    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM topups').get().n, topupsBefore);
+    assert.equal(raw.prepare('SELECT COUNT(*) AS n FROM topups').get().n, topupsBefore);
   });
 
   await test('wallet top-up validates the amount and requires login', async () => {

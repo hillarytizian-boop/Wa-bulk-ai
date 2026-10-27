@@ -19,18 +19,26 @@ const topupLimiter = rateLimit({
   message: { error: 'Too many top-up attempts. Please wait a few minutes.' },
 });
 
-router.get('/', requireAuth, (req, res) => {
-  const bal = db.prepare('SELECT balance_cents FROM users WHERE id = ?').get(req.user.id);
-  const transactions = db
-    .prepare('SELECT id, amount_cents, type, note, created_at FROM transactions WHERE user_id = ? ORDER BY id DESC LIMIT 50')
-    .all(req.user.id)
-    .map((t) => ({ ...t, created_at: iso(t.created_at) }));
-  const topups = db
-    .prepare('SELECT id, amount_kes, credited_cents, status, receipt, created_at FROM topups WHERE user_id = ? ORDER BY id DESC LIMIT 10')
-    .all(req.user.id)
-    .map((t) => ({ ...t, created_at: iso(t.created_at) }));
-  res.json({ balance_cents: bal.balance_cents, transactions, topups });
-});
+router.get(
+  '/',
+  requireAuth,
+  wrap(async (req, res) => {
+    const bal = await db.one('SELECT balance_cents FROM users WHERE id = $1', [req.user.id]);
+    const transactions = (
+      await db.all(
+        'SELECT id, amount_cents, type, note, created_at FROM transactions WHERE user_id = $1 ORDER BY id DESC LIMIT 50',
+        [req.user.id]
+      )
+    ).map((t) => ({ ...t, amount_cents: Number(t.amount_cents), created_at: iso(t.created_at) }));
+    const topups = (
+      await db.all(
+        'SELECT id, amount_kes, credited_cents, status, receipt, created_at FROM topups WHERE user_id = $1 ORDER BY id DESC LIMIT 10',
+        [req.user.id]
+      )
+    ).map((t) => ({ ...t, credited_cents: Number(t.credited_cents), created_at: iso(t.created_at) }));
+    res.json({ balance_cents: Number(bal.balance_cents), transactions, topups });
+  })
+);
 
 router.post(
   '/topup',
@@ -44,10 +52,11 @@ router.post(
     if (!Number.isInteger(amountKes) || amountKes < config.minTopupKes || amountKes > config.maxTopupKes) {
       throw new HttpError(400, `Amount must be a whole number between KES ${config.minTopupKes} and KES ${config.maxTopupKes}`);
     }
-    const pending = db
-      .prepare("SELECT COUNT(*) AS n FROM topups WHERE user_id = ? AND status = 'pending' AND created_at > ?")
-      .get(req.user.id, now() - 600);
-    if (pending.n >= 3) throw new HttpError(429, 'You already have pending payments. Wait for them to complete.');
+    const pending = await db.one(
+      "SELECT COUNT(*) AS n FROM topups WHERE user_id = $1 AND status = 'pending' AND created_at > $2",
+      [req.user.id, now() - 600]
+    );
+    if (Number(pending.n) >= 3) throw new HttpError(429, 'You already have pending payments. Wait for them to complete.');
 
     const { checkoutRequestId, merchantRequestId } = await mpesa.stkPush({
       phone,
@@ -56,20 +65,19 @@ router.post(
     });
 
     const t = now();
-    const r = db
-      .prepare(
-        `INSERT INTO topups (user_id, phone, amount_kes, credited_cents, checkout_request_id, merchant_request_id, status, created_at, updated_at)
-         VALUES (?,?,?,?,?,?,?,?,?)`
-      )
-      .run(req.user.id, phone, amountKes, amountKes * 100, checkoutRequestId, merchantRequestId || null, 'pending', t, t);
+    const r = await db.one(
+      `INSERT INTO topups (user_id, phone, amount_kes, credited_cents, checkout_request_id, merchant_request_id, status, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
+      [req.user.id, phone, amountKes, amountKes * 100, checkoutRequestId, merchantRequestId || null, 'pending', t, t]
+    );
 
-    res.status(201).json({ topup_id: Number(r.lastInsertRowid), message: 'Check your phone and enter your M-Pesa PIN.' });
+    res.status(201).json({ topup_id: Number(r.id), message: 'Check your phone and enter your M-Pesa PIN.' });
   })
 );
 
 // Daraja posts the result here. The secret path segment keeps strangers out, and every payment is
 // still confirmed with Daraja's STK query API before the wallet is credited (exactly once).
-router.post('/mpesa/callback/:secret', (req, res) => {
+router.post('/mpesa/callback/:secret', wrap(async (req, res) => {
   // Always answer 200 so Daraja stops retrying, but only act on a constant-time secret match.
   res.json({ ResultCode: 0, ResultDesc: 'Accepted' });
   const given = Buffer.from(String(req.params.secret || ''));
@@ -80,12 +88,12 @@ router.post('/mpesa/callback/:secret', (req, res) => {
   }
   const cb = req.body && req.body.Body && req.body.Body.stkCallback;
   if (!cb || !cb.CheckoutRequestID) return;
-  const t = db.prepare('SELECT id FROM topups WHERE checkout_request_id = ?').get(String(cb.CheckoutRequestID));
+  const t = await db.one('SELECT id FROM topups WHERE checkout_request_id = $1', [String(cb.CheckoutRequestID)]);
   if (!t) return;
-  mpesa
-    .reconcileTopup(t.id, mpesa.receiptFromCallback(cb))
-    .catch((err) => console.warn('[mpesa] callback reconcile failed:', err.message));
-});
+  await mpesa.reconcileTopup(t.id, mpesa.receiptFromCallback(cb)).catch((err) => {
+    console.warn('[mpesa] callback reconcile failed:', err.message);
+  });
+}));
 
 // Lets the wallet page show a top-up as paid without waiting for the poller.
 router.get(
@@ -93,11 +101,11 @@ router.get(
   requireAuth,
   wrap(async (req, res) => {
     const id = Number(req.params.id);
-    const t = db.prepare('SELECT * FROM topups WHERE id = ? AND user_id = ?').get(id, req.user.id);
+    const t = await db.one('SELECT * FROM topups WHERE id = $1 AND user_id = $2', [id, req.user.id]);
     if (!t) throw new HttpError(404, 'Top-up not found');
     if (t.status === 'pending') await mpesa.reconcileTopup(id);
-    const fresh = db.prepare('SELECT id, amount_kes, credited_cents, status, receipt FROM topups WHERE id = ?').get(id);
-    res.json({ topup: fresh });
+    const fresh = await db.one('SELECT id, amount_kes, credited_cents, status, receipt FROM topups WHERE id = $1', [id]);
+    res.json({ topup: { ...fresh, credited_cents: Number(fresh.credited_cents) } });
   })
 );
 

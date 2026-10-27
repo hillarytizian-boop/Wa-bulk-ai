@@ -67,14 +67,14 @@ function setSession(res, user) {
 }
 
 /** Middleware: attach req.user when a valid, non-revoked session cookie is present. */
-function loadUser(req, _res, next) {
+async function loadUser(req, _res, next) {
   const token = req.cookies && req.cookies[COOKIE];
   if (token) {
     try {
       const payload = jwt.verify(token, config.jwtSecret, { algorithms: ['HS256'] });
-      const user = db
-        .prepare('SELECT id, email, is_admin, balance_cents, token_version FROM users WHERE id = ?')
-        .get(payload.uid);
+      const user = await db.one('SELECT id, email, is_admin, balance_cents, token_version FROM users WHERE id = $1', [
+        payload.uid,
+      ]);
       // token_version lets us revoke every existing session (password change, logout everywhere).
       if (user && Number(payload.tv || 0) === Number(user.token_version || 0)) req.user = user;
     } catch {
@@ -118,15 +118,19 @@ router.post(
     const hash = await bcrypt.hash(password, 10);
     let id;
     try {
-      id = db.prepare('INSERT INTO users (email, password_hash, created_at) VALUES (?,?,?)').run(email, hash, now())
-        .lastInsertRowid;
+      const inserted = await db.one('INSERT INTO users (email, password_hash, created_at) VALUES ($1,$2,$3) RETURNING id', [
+        email,
+        hash,
+        now(),
+      ]);
+      id = inserted.id;
     } catch (err) {
       if (String(err.code).startsWith('SQLITE_CONSTRAINT')) {
         throw new HttpError(409, 'That email cannot be used. Try logging in instead.');
       }
       throw err;
     }
-    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+    const user = await db.one('SELECT * FROM users WHERE id = $1', [id]);
     setSession(res, user);
     res.status(201).json({ user: publicUser(user) });
   })
@@ -141,7 +145,7 @@ router.post(
     const key = `${req.ip}|${email}`;
     checkAccountThrottle(key);
 
-    const row = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
+    const row = await db.one('SELECT * FROM users WHERE email = $1', [email]);
     // Always run a hash comparison so response time does not reveal whether the email exists.
     const ok = await bcrypt.compare(password.slice(0, BCRYPT_MAX_BYTES), row ? row.password_hash : DUMMY_HASH);
     if (!row || !ok) {
@@ -163,7 +167,7 @@ router.post(
     const next = req.body && req.body.new_password;
     assertPassword(next);
 
-    const row = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
+    const row = await db.one('SELECT * FROM users WHERE id = $1', [req.user.id]);
     const ok = await bcrypt.compare(current.slice(0, BCRYPT_MAX_BYTES), row.password_hash);
     if (!ok) {
       noteFailure(`${req.ip}|${row.email}`);
@@ -174,8 +178,8 @@ router.post(
     }
 
     const hash = await bcrypt.hash(next, 10);
-    db.prepare('UPDATE users SET password_hash = ?, token_version = token_version + 1 WHERE id = ?').run(hash, row.id);
-    const fresh = db.prepare('SELECT * FROM users WHERE id = ?').get(row.id);
+    await db.run('UPDATE users SET password_hash = $1, token_version = token_version + 1 WHERE id = $2', [hash, row.id]);
+    const fresh = await db.one('SELECT * FROM users WHERE id = $1', [row.id]);
     setSession(res, fresh); // keep the current device signed in
     res.json({ user: publicUser(fresh), message: 'Password updated. Other devices have been signed out.' });
   })
@@ -186,11 +190,11 @@ router.post('/logout', (req, res) => {
   res.json({ ok: true });
 });
 
-router.post('/logout-all', requireAuth, (req, res) => {
-  db.prepare('UPDATE users SET token_version = token_version + 1 WHERE id = ?').run(req.user.id);
+router.post('/logout-all', requireAuth, wrap(async (req, res) => {
+  await db.run('UPDATE users SET token_version = token_version + 1 WHERE id = $1', [req.user.id]);
   res.clearCookie(COOKIE, COOKIE_OPTS);
   res.json({ ok: true, message: 'Signed out on all devices.' });
-});
+}));
 
 router.get('/me', (req, res) => {
   res.json({ user: req.user ? publicUser(req.user) : null });

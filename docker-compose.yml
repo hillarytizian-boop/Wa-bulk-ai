@@ -1,15 +1,33 @@
 services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: smm
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-smm-dev-password}
+      POSTGRES_DB: smm
+    volumes:
+      - panel-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U smm -d smm"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
   panel:
     build: .
     ports:
       - "3000:3000"
     env_file: .env
     environment:
-      DATABASE_PATH: /data/store.db
+      DATABASE_URL: postgres://smm:${POSTGRES_PASSWORD:-smm-dev-password}@db:5432/smm
       NODE_ENV: production
       COOKIE_SECURE: "false" # set to "true" once you serve it over HTTPS
-    volumes:
-      - panel-data:/data
+    depends_on:
+      db:
+        condition: service_healthy
+    command: sh -c "node scripts/migrate.js && node src/server.js"
     restart: unless-stopped
+
 volumes:
-  panel-data:
+  panel-db:

@@ -131,19 +131,41 @@ The test suite needs the compiled `better-sqlite3` native module (`npm install`)
 
 ## Deploying
 
-A long-running Node process with a SQLite file — use a host with a **persistent disk** (VPS,
-Railway, Render, Fly.io, Docker). Not suitable for serverless functions.
+### Option A - Vercel + Supabase (serverless)
+
+The app ships a serverless entry point (`api/index.js`) and a Vercel config.
+
+1. **Database** - create a Supabase project, then apply the schema and seed the admin:
+   ```bash
+   DATABASE_URL="postgresql://postgres.<ref>:<password>@aws-0-<region>.pooler.supabase.com:6543/postgres" \
+     npm run migrate
+   ```
+   (Or paste the output of `node -e "console.log(require('./src/db').renderSchema('postgres'))"` into
+   the Supabase SQL editor and create the admin with `npm run admin:password`.)
+2. **Vercel** - import the GitHub repo, then set these environment variables:
+   `DATABASE_URL` (Supabase **transaction pooler**, port 6543), `DATABASE_FALLBACK_URLS` (optional),
+   `JWT_SECRET`, `CRON_SECRET`, `SMM_API_KEY`, `ADMIN_EMAIL`, `ADMIN_PASSWORD` (first seed only),
+   `DEFAULT_MARKUP`, `KES_PER_USD`, `FEE_KES`, `PUBLIC_URL` (your `https://...vercel.app` domain),
+   `COOKIE_SECURE=true`, `TRUST_PROXY=true`, `NODE_ENV=production`, and the `MPESA_*` values.
+3. Deploy. `vercel.json` rewrites `/api/*` to the serverless function, serves `public/` as static
+   files and registers a daily cron (`/api/cron/tick`).
+
+Serverless notes:
+- Background work has no resident timer, so order statuses are refreshed **when the customer opens
+  their orders** (`GET /api/orders` lazily polls that user's active orders, throttled by
+  `last_polled_at`) and by the daily cron sweep which also retries uncertain submissions and
+  reconciles pending M-Pesa payments. On a VPS/Docker the in-process jobs run every 30-60s.
+- Supabase's transaction pooler (port 6543) is required on Vercel; the direct `db.<ref>` host is
+  IPv6-only. If a pooler host does not resolve for your project, list alternatives in
+  `DATABASE_FALLBACK_URLS` - the app keeps the first one that answers.
+
+### Option B - Docker / VPS (long-running, keeps the 30s poller)
 
 ```bash
-docker compose up -d --build      # data lives in the "panel-data" volume
+docker compose up -d --build     # app + Postgres, data in the panel-db volume
 ```
 
-Or build directly:
-
-```bash
-docker build -t smm-panel .
-docker run -d -p 3000:3000 --env-file .env -v panel-data:/data smm-panel
-```
+Or point `DATABASE_URL` at any Postgres (including Supabase) and run `npm run migrate && npm start`.
 
 Production checklist:
 
@@ -193,7 +215,9 @@ Still recommended for a live launch: put the site behind HTTPS (set `COOKIE_SECU
 ```
 src/server.js         app, admin seeding, health check
 src/config.js         env configuration (with production guards)
-src/db.js             SQLite schema (integer KES cents)
+src/db.js             async data layer: Postgres (Supabase) or SQLite (dev/tests)
+api/index.js          Vercel serverless entry point
+vercel.json           Vercel routing + cron
 src/money.js          integer money helpers + KES formatting
 src/pricing.js        markup / KES-per-USD / fee -> customer prices
 src/serviceTypes.js   per-type fields and flat/line-counted rules
@@ -201,7 +225,7 @@ src/smm.js            smm.africa client (retries, idempotency, Retry-After)
 src/catalog.js        10-minute services cache
 src/orders.js         order engine: charge, submit, poll, refund, reconcile
 src/mpesa.js          Daraja STK Push, query, credit-once reconciliation
-src/jobs.js           background pollers
+src/jobs.js           background pollers (tick() for cron, start() for VPS)
 src/security.js       CSRF/origin checks, no-store headers
 src/audit.js          audit log for privileged actions
 src/routes/           auth, shop, wallet, admin

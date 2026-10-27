@@ -40,22 +40,24 @@ async function test(name, fn) {
   });
 
   const db = require('../src/db');
+  const raw = db.raw; // better-sqlite3 handle, used only for test setup/assertions
+  await db.initSchema();
   const catalog = require('../src/catalog');
   const pricing = require('../src/pricing');
   const orders = require('../src/orders');
   const mpesa = require('../src/mpesa');
   const { HttpError } = require('../src/errors');
-  pricing.initSettings();
+  await pricing.initSettings();
 
   const now = () => Math.floor(Date.now() / 1000);
   const uid = Number(
-    db.prepare("INSERT INTO users (email, password_hash, created_at) VALUES ('a@b.co','x',?)").run(now()).lastInsertRowid
+    raw.prepare("INSERT INTO users (email, password_hash, created_at) VALUES ('a@b.co','x',?)").run(now()).lastInsertRowid
   );
-  const balance = () => db.prepare('SELECT balance_cents FROM users WHERE id = ?').get(uid).balance_cents;
+  const balance = () => raw.prepare('SELECT balance_cents FROM users WHERE id = ?').get(uid).balance_cents;
   /** Give the test user a balance expressed in KES. */
-  const setBalanceKes = (k) => db.prepare('UPDATE users SET balance_cents = ? WHERE id = ?').run(Math.round(k * 100), uid);
-  const row = (id) => orders.getOrder(id);
-  const forcePoll = (id) => db.prepare('UPDATE orders SET last_polled_at = 0 WHERE id = ?').run(id);
+  const setBalanceKes = (k) => raw.prepare('UPDATE users SET balance_cents = ? WHERE id = ?').run(Math.round(k * 100), uid);
+  const row = (id) => raw.prepare('SELECT * FROM orders WHERE id = ?').get(id);
+  const forcePoll = (id) => raw.prepare('UPDATE orders SET last_polled_at = 0 WHERE id = ?').run(id);
   const reject = async (p, status) => {
     await assert.rejects(p, (e) => e instanceof HttpError && (status ? e.status === status : true));
   };
@@ -92,7 +94,7 @@ async function test(name, fn) {
   // ---------------------------------------------------------------- ordering
   await test('rejects an order when the wallet is too low (no order row created)', async () => {
     await reject(orders.placeOrder(uid, { service: 1, link: 'https://instagram.com/x', quantity: 1000 }), 402);
-    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM orders').get().n, 0);
+    assert.equal(raw.prepare('SELECT COUNT(*) AS n FROM orders').get().n, 0);
   });
 
   await test('validates quantity, link and required fields', async () => {
@@ -138,7 +140,7 @@ async function test(name, fn) {
     const before = balance();
     await reject(orders.placeOrder(uid, { service: 1, link: 'https://x.co/REJECT', quantity: 100 }), 502);
     assert.equal(balance(), before);
-    const failed = db.prepare("SELECT * FROM orders WHERE status = 'failed'").get();
+    const failed = raw.prepare("SELECT * FROM orders WHERE status = 'failed'").get();
     assert.equal(failed.refunded_cents, failed.price_cents);
     assert.equal(failed.settled, 1);
   });
@@ -149,7 +151,7 @@ async function test(name, fn) {
     const o = await orders.placeOrder(uid, { service: 1, link: 'https://x.co/FLAKY', quantity: 100 });
     assert.equal(o.status, 'submitting'); // outcome unknown -> pending, never auto-refunded
     assert.equal(balance(), before - 1670); // 100 units at 167 KES/1000 = KSh 16.70
-    db.prepare('UPDATE orders SET updated_at = 0 WHERE id = ?').run(o.id);
+    raw.prepare('UPDATE orders SET updated_at = 0 WHERE id = ?').run(o.id);
     await orders.recoverSubmitting();
     const after = row(o.id);
     assert.equal(after.status, 'queued');
@@ -193,20 +195,20 @@ async function test(name, fn) {
   });
 
   await test('admin markup change applies to new orders and is stored per order', async () => {
-    pricing.setMarkup(0.5);
+    await pricing.setMarkup(0.5);
     const o = await orders.placeOrder(uid, { service: 4, link: 'https://tiktok.com/v/1', quantity: 1000 });
     assert.equal(o.price_cents, 5750); // 0.05 * 1.5 * 100 = 7.5 KES + 50 = 57.5
     assert.equal(o.markup, 0.5);
-    pricing.setMarkup(0.3);
+    await pricing.setMarkup(0.3);
   });
 
   await test('KES/USD and fee are admin-editable and affect prices', async () => {
-    pricing.setKesPerUsd(120);
-    pricing.setFeeKes(20);
+    await pricing.setKesPerUsd(120);
+    await pricing.setFeeKes(20);
     // 0.90 * 1.3 * 120 = 140.4 + 20 = 160.4 KES per 1000
     assert.equal(pricing.rateCentsPer1000(0.9), 16040);
-    pricing.setKesPerUsd(100);
-    pricing.setFeeKes(50);
+    await pricing.setKesPerUsd(100);
+    await pricing.setFeeKes(50);
     assert.equal(pricing.rateCentsPer1000(0.9), 16700);
   });
 
@@ -231,7 +233,7 @@ async function test(name, fn) {
     const { checkoutRequestId } = await mpesa.stkPush({ phone: '254712345678', amountKes, reference: 'W1' });
     const t = now();
     const id = Number(
-      db
+      raw
         .prepare(
           `INSERT INTO topups (user_id, phone, amount_kes, credited_cents, checkout_request_id, status, created_at, updated_at)
            VALUES (?,?,?,?,?,'pending',?,?)`
@@ -264,8 +266,8 @@ async function test(name, fn) {
 
   // ---------------------------------------------------------------- ledger
   await test('ledger: order/refund/adjustment entries add up to what customers paid', () => {
-    const paid = db.prepare('SELECT COALESCE(SUM(price_cents - refunded_cents),0) AS s FROM orders').get().s;
-    const ledger = db
+    const paid = raw.prepare('SELECT COALESCE(SUM(price_cents - refunded_cents),0) AS s FROM orders').get().s;
+    const ledger = raw
       .prepare("SELECT COALESCE(SUM(amount_cents),0) AS s FROM transactions WHERE type IN ('order','refund','admin')")
       .get().s;
     assert.equal(-ledger, paid);
@@ -281,7 +283,7 @@ async function test(name, fn) {
       const o = await orders.placeOrder(uid, { service: 1, link: 'https://x.co/UNKNOWN', quantity: 100 });
       assert.equal(o.status, 'submitting');
       assert.equal(balance(), before - 1670); // charged once, still held: no refund for an unknown outcome
-      db.prepare("UPDATE orders SET attempts = 7, updated_at = 0 WHERE id = ?").run(o.id);
+      raw.prepare("UPDATE orders SET attempts = 7, updated_at = 0 WHERE id = ?").run(o.id);
       await orders.recoverSubmitting();
       const fresh = row(o.id);
       assert.equal(fresh.status, 'needs_review');
