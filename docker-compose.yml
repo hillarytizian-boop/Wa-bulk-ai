@@ -1,0 +1,15 @@
+services:
+  panel:
+    build: .
+    ports:
+      - "3000:3000"
+    env_file: .env
+    environment:
+      DATABASE_PATH: /data/store.db
+      NODE_ENV: production
+      COOKIE_SECURE: "false" # set to "true" once you serve it over HTTPS
+    volumes:
+      - panel-data:/data
+    restart: unless-stopped
+volumes:
+  panel-data:
