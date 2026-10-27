@@ -38,7 +38,7 @@ async function test(name, fn) {
   const pricing = require('../src/pricing');
   const db = require('../src/db');
   const raw = db.raw;
-  const { createApp, seedAdmin, migrate } = require('../src/server');
+  const { createApp, seedAdmin, migrate } = require('../src/bootstrap');
   await migrate();
   await seedAdmin({ log: () => {} });
 
