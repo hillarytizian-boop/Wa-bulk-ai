@@ -32,9 +32,12 @@ function bootFailure(res, err) {
   }));
 }
 
-async function handler(req, res) {
+// Deliberately synchronous: Vercel's Node runtime invokes plain handler exports expecting the
+// handler to finish the response itself, and an async export that only returns a promise can be
+// reported as a failed invocation before the response is written.
+function handler(req, res) {
   try {
-    return await load()(req, res);
+    return load()(req, res);
   } catch (err) {
     console.error('[server] request failed:', err);
     return bootFailure(res, err);
