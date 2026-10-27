@@ -5,7 +5,7 @@
 //   npm run migrate
 const config = require('../src/config');
 const db = require('../src/db');
-const { migrate, seedAdmin } = require('../src/server');
+const { migrate, seedAdmin } = require('../src/bootstrap');
 
 (async () => {
   console.log(`[migrate] target: ${db.dialect}${db.dialect === 'sqlite' ? ` (${config.dbPath})` : ''}`);

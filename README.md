@@ -213,7 +213,7 @@ Still recommended for a live launch: put the site behind HTTPS (set `COOKIE_SECU
 ## Project layout
 
 ```
-src/server.js         app, admin seeding, health check
+src/bootstrap.js         app, admin seeding, health check
 src/config.js         env configuration (with production guards)
 src/db.js             async data layer: Postgres (Supabase) or SQLite (dev/tests)
 api/index.js          Vercel serverless entry point
