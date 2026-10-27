@@ -1,9 +1,9 @@
 // Long-running server entry point: used by `npm start`, Docker and any VPS/PM2 deploy.
-// Vercel never runs this file - it imports src/app.js, which must stay side-effect free.
+// Vercel never runs this file - it imports src/webapp.js, which must stay side-effect free.
 const config = require('./config');
 const db = require('./db');
 const jobs = require('./jobs');
-const app = require('./app');
+const app = require('./webapp');
 
 async function main() {
   await app.migrate();
