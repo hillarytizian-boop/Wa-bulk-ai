@@ -1,14 +1,28 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "version": 2,
-  "outputDirectory": "public",
   "framework": null,
+  "outputDirectory": "public",
   "functions": {
     "api/index.js": {
       "maxDuration": 60,
       "memory": 1024
     }
   },
-  "rewrites": [{ "source": "/api/(.*)", "destination": "/api/index.js" }],
-  "crons": [{ "path": "/api/cron/tick", "schedule": "15 2 * * *" }]
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": "/api/index.js"
+    },
+    {
+      "source": "/healthz",
+      "destination": "/api/index.js"
+    }
+  ],
+  "crons": [
+    {
+      "path": "/api/cron/tick",
+      "schedule": "15 2 * * *"
+    }
+  ]
 }
