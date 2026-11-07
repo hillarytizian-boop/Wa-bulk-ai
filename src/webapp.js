@@ -104,6 +104,7 @@ function createApp() {
   app.use('/api/auth', auth.router);
   app.use('/api/admin', adminLimiter, require('./routes/admin'));
   app.use('/api/wallet', require('./routes/wallet'));
+  app.use('/api', require('./routes/support'));
   app.use('/api', require('./routes/shop'));
   app.use('/api', (_req, res) => res.status(404).json({ error: 'Not found' }));
 

@@ -8,7 +8,7 @@
 
   const state = {
     meta: null, user: null, orders: null, timer: null, route: '', build: null,
-    currency: 'KES', updateDismissed: false,
+    currency: 'KES', updateDismissed: false, favorites: new Set(),
   };
 
   const view = document.getElementById('view');
@@ -59,6 +59,8 @@
     more: '<path d="M4 7.2h16M4 12h16M4 16.8h10"/>',
     filter: '<path d="M4 7h16M7 12h10M10 17h4"/>',
     search: '<circle cx="11" cy="11" r="6.4"/><path d="M15.8 15.8 20.5 20.5"/>',
+    star: '<path d="m12 3.9 2.6 5.3 5.9.9-4.3 4.1 1 5.9-5.2-2.8-5.2 2.8 1-5.9L3.5 10.1l5.9-.9z"/>',
+    chat: '<path d="M20.5 12c0 4-3.8 7.2-8.5 7.2-1 0-2-.15-2.9-.42L4.2 20.4l1.4-3.6A6.9 6.9 0 0 1 3.5 12c0-4 3.8-7.2 8.5-7.2s8.5 3.2 8.5 7.2z"/>',
     download: '<path d="M12 4.6v9.6M8.2 10.6 12 14.4l3.8-3.8M5.4 19h13.2"/>',
   };
 
@@ -128,7 +130,7 @@
       : h('span', { class: 'order-link' }, url);
 
   const stopTimer = () => { if (state.timer) clearInterval(state.timer); state.timer = null; };
-  const stale = () => state.route !== currentRoute().name;
+  const stale = () => state.route !== currentRoute().name.split('/')[0];
   const requireLogin = () => { if (state.user) return true; location.hash = '#/login'; return false; };
 
   const GROUPS = {
@@ -141,7 +143,7 @@
   const PAGE_TITLES = {
     '': 'Dashboard', orders: 'Orders', order: 'New order', services: 'Services',
     login: 'Log in', register: 'Create account', wallet: 'Wallet', mass: 'Mass order',
-    drip: 'Drip campaigns', admin: 'Admin',
+    drip: 'Drip campaigns', admin: 'Admin', support: 'Support', ticket: 'Ticket',
   };
 
   const pageHead = (title, sub, action) => h('div', { class: 'page-head' },
@@ -187,8 +189,9 @@
   function renderChrome() {
     const route = currentRoute().name;
     const site = state.meta ? state.meta.siteName : 'HilaPanel';
-    document.title = `${PAGE_TITLES[route] || 'Dashboard'} | ${site}`;
-    document.getElementById('appTitle').textContent = `${PAGE_TITLES[route] || 'Dashboard'} | ${site}`;
+    const baseRoute = route.split('/')[0];
+    document.title = `${PAGE_TITLES[baseRoute] || 'Dashboard'} | ${site}`;
+    document.getElementById('appTitle').textContent = `${PAGE_TITLES[baseRoute] || 'Dashboard'} | ${site}`;
     document.getElementById('appSub').textContent = location.host;
 
     // balance strip: brand · [amount + KES v] · translate
@@ -215,7 +218,7 @@
 
     // segmented tabs
     const tabs = document.getElementById('tabs');
-    const showTabs = ['', 'orders', 'drip', 'mass'].includes(route);
+    const showTabs = ['', 'orders', 'drip', 'mass'].includes(baseRoute);
     tabs.hidden = !showTabs;
     if (!showTabs) fill(tabs);
     if (showTabs) {
@@ -227,8 +230,10 @@
     }
 
     // overflow menu
-    const links = [['', 'Dashboard'], ['order', 'New order'], ['services', 'Services'], ['mass', 'Mass order']];
+    const links = [['', 'Dashboard'], ['order', 'New order'], ['services', 'Pricing'], ['mass', 'Mass order']];
     if (state.user) links.push(['orders', 'Orders'], ['wallet', 'Wallet']);
+    if (state.user) links.push(['support', 'Support']);
+    links.push(['services', 'Pricing']);
     if (state.user && state.user.is_admin) links.push(['admin', 'Admin']);
     const kids = links.map(([r, label]) => h('a', { href: `#/${r}`, class: route === r ? 'active' : '' }, label));
     kids.push(state.user
@@ -275,6 +280,14 @@
     location.hash = '#/';
     renderChrome();
     route();
+  }
+
+  async function loadFavorites() {
+    if (!state.user) { state.favorites = new Set(); return; }
+    try {
+      const { favorites } = await api('/favorites');
+      state.favorites = new Set(favorites.map(Number));
+    } catch { /* offline */ }
   }
 
   const setBalance = (cents) => {
@@ -380,7 +393,7 @@
   }
 
   const orderView = (params) => (params.service ? orderFormView(params)
-    : params.platform ? orderBrowseView(params) : orderPlatformView());
+    : (params.platform || params.favorites) ? orderBrowseView(params) : orderPlatformView());
 
   // ------------------------------------------------------------------ new order
   // Three steps, matching the smm.africa flow: pick a platform -> pick a category
@@ -398,6 +411,23 @@
     if (!w.length) return '•';
     return (w.length === 1 ? w[0].slice(0, 2) : w[0][0] + w[1][0]).toUpperCase();
   };
+
+  const starBtn = (s) => h('button', {
+    class: `star${state.favorites.has(s.id) ? ' on' : ''}`,
+    'aria-label': state.favorites.has(s.id) ? 'Remove from starred' : 'Star this service',
+    title: 'Star this service',
+    onclick: async (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const el = ev.currentTarget; // currentTarget is null once the handler awaits
+      try {
+        const r = await api('/favorites', { method: 'POST', body: { service_id: s.id } });
+        if (r.favorite) state.favorites.add(s.id); else state.favorites.delete(s.id);
+        el.classList.toggle('on', r.favorite);
+        el.setAttribute('aria-label', r.favorite ? 'Remove from starred' : 'Star this service');
+      } catch (e) { toast(e.message, true); }
+    },
+  }, svg(ICO.star, 18));
 
   const platTile = (p, href) => h('a', { class: 'plat', href },
     h('span', {
@@ -429,6 +459,9 @@
         h('button', { class: 'sq', 'aria-label': 'Search services', onclick: submit }, svg(ICO.search, 20))),
       h('label', { style: 'margin:18px 0 10px' }, 'Platform'),
       h('div', { class: 'plat-grid' },
+        state.favorites.size
+          ? platTile({ key: 'fav', name: 'Starred', color: '#f7b955', count: state.favorites.size }, '#/order?favorites=1')
+          : null,
         data.platforms.map((p) => platTile(p, `#/order?platform=${encodeURIComponent(p.key)}&sort=cheap`)),
         platTile({ key: 'all', name: 'All services', color: '#3ee07b', count: data.pagination.total },
           '#/order?platform=all&sort=cheap')));
@@ -447,13 +480,24 @@
       platform, category, sort, q, page: 1, ...over,
     })}`;
 
+    const starred = Boolean(params.favorites);
     fill(view, h('a', { class: 'backlink', href: '#/order' }, '← All platforms'), h('div', { class: 'card' }, skeletons(3)));
     let data;
-    try { data = await loadServices({ platform, category, sort, q, page, per_page: 20 }); }
-    catch (e) { return fill(view, h('a', { class: 'backlink', href: '#/order' }, '← All platforms'), pageHead('New order'), errBox(e.message)); }
+    try {
+      if (starred) {
+        await loadFavorites();
+        data = state.favorites.size
+          ? await loadServices({ ids: [...state.favorites].join(','), per_page: 200 })
+          : { services: [], categories: [], platforms: [], pagination: { page: 1, per_page: 200, total: 0, pages: 1 } };
+      } else {
+        data = await loadServices({ platform, category, sort, q, page, per_page: 20 });
+      }
+    } catch (e) { return fill(view, h('a', { class: 'backlink', href: '#/order' }, '← All platforms'), pageHead('New order'), errBox(e.message)); }
     if (stale()) return;
 
-    const plat = data.platforms.find((p) => p.key === platform) || { name: 'All services', color: '#3ee07b', count: data.pagination.total };
+    const plat = starred
+      ? { name: 'Starred services', color: '#f7b955', count: data.services.length }
+      : data.platforms.find((p) => p.key === platform) || { name: 'All services', color: '#3ee07b', count: data.pagination.total };
 
     const search = h('input', { type: 'search', placeholder: `Search ${plat.name} services…`, value: q, autocomplete: 'off' });
     search.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') location.hash = link({ q: search.value.trim() }); });
@@ -468,8 +512,10 @@
     sortSel.addEventListener('change', () => { location.hash = link({ sort: sortSel.value }); });
 
     const row = (s) => h('div', { class: 'svc' },
-      h('div', { style: 'min-width:0' },
-        h('div', { class: 'name' }, s.name),
+      h('div', { style: 'min-width:0;flex:1' },
+        h('div', { class: 'row', style: 'gap:8px;align-items:flex-start;flex-wrap:nowrap' },
+          h('div', { class: 'name', style: 'flex:1' }, s.name),
+          starBtn(s)),
         h('div', { class: 'meta' },
           `${s.category} · ${s.flat ? 'per order' : `min ${num(s.min)} – max ${num(s.max)}`}${s.refill ? ' · refill' : ''}`)),
       h('div', { class: 'svc-side' },
@@ -488,11 +534,13 @@
           h('div', { class: 'muted', style: 'font-size:.85rem' }, `${num(data.pagination.total)} services`))),
       h('div', { class: 'searchrow' }, search,
         h('button', { class: 'sq', 'aria-label': 'Search', onclick: () => { location.hash = link({ q: search.value.trim() }); } }, svg(ICO.search, 20))),
-      h('label', null, 'Category'), catSel,
-      h('label', null, 'Sort by'), sortSel,
-      h('div', { class: 'countline' }, `${num(data.pagination.total)} service(s) · ${sortWord(sort)}`),
+      starred ? null : [h('label', null, 'Category'), catSel, h('label', null, 'Sort by'), sortSel],
+      h('div', { class: 'countline' }, starred
+        ? `${num(data.services.length)} starred service(s)`
+        : `${num(data.pagination.total)} service(s) · ${sortWord(sort)}`),
       h('div', { class: 'card' },
-        data.services.length ? data.services.map(row) : h('p', { class: 'muted' }, 'No services match those filters.'),
+        data.services.length ? data.services.map(row)
+          : h('p', { class: 'muted' }, starred ? 'No starred services yet — tap the ☆ on any service to save it here.' : 'No services match those filters.'),
         h('div', { class: 'pagination' },
           h('button', { class: 'btn ghost small', disabled: page <= 1, onclick: () => { location.hash = link({ page: page - 1 }); } }, 'Previous'),
           h('span', { class: 'muted' }, `Page ${data.pagination.page} / ${data.pagination.pages}`),
@@ -839,6 +887,7 @@
       try {
         const { user } = await api(`/auth/${isLogin ? 'login' : 'register'}`, { method: 'POST', body: { email: email.value.trim(), password: password.value } });
         state.user = user;
+        await loadFavorites();
         renderChrome();
         toast(isLogin ? 'Welcome back!' : 'Account created.');
         location.hash = '#/';
@@ -857,6 +906,7 @@
         err, btn,
         h('p', { class: 'hint' }, isLogin ? 'No account yet? ' : 'Already registered? ',
           h('a', { href: isLogin ? '#/register' : '#/login' }, isLogin ? 'Create one' : 'Log in')),
+        h('p', { class: 'hint' }, h('a', { href: '#/services' }, 'Browse prices without an account →')),
         state.meta && state.meta.googleEnabled
           ? null
           : h('p', { class: 'hint' }, 'Google sign-in appears once GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are set.')));
@@ -983,7 +1033,8 @@
 
     const reviewBox = h('div', { class: 'card' }, h('h2', null, 'Needs review'), skeletons(2));
     const usersBox = h('div', { class: 'card' }, h('h2', null, 'Customers'), skeletons(2));
-    view.append(reviewBox, usersBox);
+    const ticketsBox = h('div', { class: 'card' }, h('h2', null, 'Support tickets'), skeletons(2));
+    view.append(reviewBox, usersBox, ticketsBox);
 
     async function action(ev, id, kind) {
       ev.target.disabled = true;
@@ -1015,6 +1066,22 @@
     } catch (e) { fill(reviewBox, h('h2', null, 'Needs review'), errBox(e.message)); }
 
     try {
+      const { tickets } = await api('/tickets?scope=all');
+      if (stale()) return;
+      fill(ticketsBox,
+        h('h2', null, 'Support tickets'),
+        tickets.length
+          ? h('div', { class: 'table-wrap' }, h('table', null,
+              h('thead', null, h('tr', null, h('th', null, 'Ticket'), h('th', null, 'Customer'), h('th', null, 'Status'), h('th', null, ''))),
+              h('tbody', null, tickets.map((t) => h('tr', null,
+                h('td', null, `#${t.id}`, h('div', { class: 'meta' }, t.subject)),
+                h('td', null, t.email || '—'),
+                h('td', null, ticketBadge(t)),
+                h('td', null, h('a', { class: 'btn ghost small', href: `#/support/${t.id}` }, 'Open')))))))
+          : h('p', { class: 'muted' }, 'No tickets.'));
+    } catch (e) { fill(ticketsBox, h('h2', null, 'Support tickets'), errBox(e.message)); }
+
+    try {
       const { users } = await api('/admin/users');
       if (stale()) return;
       fill(usersBox,
@@ -1040,6 +1107,115 @@
     } catch (e) { fill(usersBox, h('h2', null, 'Customers'), errBox(e.message)); }
   }
 
+  // ------------------------------------------------------------------ support
+  function ticketBadge(t) {
+    if (t.status !== 'open') return h('span', { class: 'badge' }, 'closed');
+    return t.last_reply_by === 'admin'
+      ? h('span', { class: 'badge completed' }, 'answered')
+      : h('span', { class: 'badge processing' }, 'open');
+  }
+
+  const ticketRow = (t) => h('a', { class: 'order-item', href: `#/support/${t.id}`, style: 'display:block;color:inherit' },
+    h('div', { class: 'order-top' },
+      h('div', { class: 'order-id' }, `#${t.id} · ${t.subject}`),
+      ticketBadge(t)),
+    h('div', { class: 'order-meta' },
+      h('span', null, `${num(t.messages)} message(s)`),
+      h('span', null, relDate(t.updated_at)),
+      t.email ? h('span', null, t.email) : null));
+
+  async function supportView() {
+    if (!requireLogin()) return;
+    stopTimer();
+    const listBox = h('div', null, skeletons(3));
+    const subject = h('input', { type: 'text', maxlength: '120', placeholder: 'e.g. Order #1042 has not started' });
+    const message = h('textarea', { placeholder: 'Include the order ID and the link you submitted.' });
+    const err = h('div', { class: 'errtext' });
+    const btn = h('button', { class: 'btn block' }, 'Open ticket');
+
+    btn.addEventListener('click', async () => {
+      err.textContent = '';
+      if (!subject.value.trim() || !message.value.trim()) { err.textContent = 'Add a subject and a message.'; return; }
+      btn.disabled = true;
+      try {
+        const { ticket } = await api('/tickets', { method: 'POST', body: { subject: subject.value.trim(), message: message.value.trim() } });
+        toast(`Ticket #${ticket.id} opened.`);
+        location.hash = `#/support/${ticket.id}`;
+      } catch (e) { err.textContent = e.message; btn.disabled = false; }
+    });
+
+    fill(view,
+      pageHead('Support', 'Open a ticket — replies appear here in the panel.'),
+      h('div', { class: 'card' },
+        h('h2', null, 'New ticket'),
+        h('label', null, 'Subject'), subject,
+        h('label', null, 'Message'), message,
+        err, btn),
+      h('div', { class: 'card' }, h('h2', null, 'Your tickets'), listBox));
+
+    try {
+      const { tickets } = await api('/tickets');
+      if (stale()) return;
+      fill(listBox, tickets.length ? tickets.map(ticketRow) : h('p', { class: 'muted' }, 'No tickets yet.'));
+    } catch (e) { fill(listBox, errBox(e.message)); }
+  }
+
+  async function ticketView(id) {
+    if (!requireLogin()) return;
+    stopTimer();
+    const head = h('div');
+    const thread = h('div', null, skeletons(3));
+    const reply = h('textarea', { placeholder: 'Write a reply…' });
+    const err = h('div', { class: 'errtext' });
+    const send = h('button', { class: 'btn block' }, 'Send reply');
+    const closeBtn = h('button', { class: 'btn ghost small' }, 'Close ticket');
+
+    fill(view,
+      h('a', { class: 'backlink', href: '#/support' }, '← All tickets'),
+      head, thread,
+      h('div', { class: 'card' }, h('h2', null, 'Reply'), reply, err, send, h('div', { style: 'margin-top:10px' }, closeBtn)));
+
+    async function draw() {
+      let data;
+      try { data = await api(`/tickets/${id}`); }
+      catch (e) { return fill(thread, errBox(e.message)); }
+      if (stale()) return;
+      const t = data.ticket;
+      fill(head,
+        h('div', { class: 'page-head' },
+          h('div', null, h('h1', { style: 'font-size:1.4rem' }, `#${t.id} ${t.subject}`), h('p', { class: 'sub' }, `Opened ${fmtDate(t.created_at)}`)),
+          ticketBadge(t)));
+      closeBtn.disabled = t.status !== 'open';
+      fill(thread, data.messages.map((m) => h('div', {
+        class: 'order-item',
+        style: m.is_admin ? 'border-color:rgba(62,224,123,.35)' : '',
+      },
+        h('div', { class: 'order-top' },
+          h('div', { class: 'order-id', style: 'font-size:.85rem' }, m.is_admin ? 'Support' : 'You'),
+          h('span', { class: 'order-meta', style: 'margin:0' }, fmtDate(m.created_at))),
+        h('div', { style: 'margin-top:8px;white-space:pre-wrap;line-height:1.5' }, m.body))));
+    }
+
+    send.addEventListener('click', async () => {
+      err.textContent = '';
+      if (!reply.value.trim()) { err.textContent = 'Write something first.'; return; }
+      send.disabled = true;
+      try {
+        await api(`/tickets/${id}/messages`, { method: 'POST', body: { body: reply.value.trim() } });
+        reply.value = '';
+        await draw();
+      } catch (e) { err.textContent = e.message; }
+      finally { send.disabled = false; }
+    });
+
+    closeBtn.addEventListener('click', async () => {
+      try { await api(`/tickets/${id}/close`, { method: 'POST' }); toast('Ticket closed.'); await draw(); }
+      catch (e) { toast(e.message, true); }
+    });
+
+    await draw();
+  }
+
   // ------------------------------------------------------------------ router
   function currentRoute() {
     const raw = (location.hash || '#/').slice(1);
@@ -1057,6 +1233,11 @@
     renderChrome();
     window.scrollTo({ top: 0 });
     fill(view);
+    if (name.startsWith('support/')) {
+      state.route = 'support';
+      renderChrome();
+      return ticketView(Number(name.split('/')[1]) || 0);
+    }
     switch (name) {
       case '': return dashboardView();
       case 'order': return orderView(params);
@@ -1066,6 +1247,7 @@
       case 'orders': return ordersView();
       case 'mass': return massView();
       case 'drip': return dripView();
+      case 'support': return supportView();
       case 'wallet': return walletView();
       case 'admin': return adminView();
       default:
@@ -1100,6 +1282,7 @@
     }
     state.build = state.meta.build;
     try { const { user } = await api('/auth/me'); state.user = user; } catch { /* logged out */ }
+    await loadFavorites();
     renderChrome();
     route();
 

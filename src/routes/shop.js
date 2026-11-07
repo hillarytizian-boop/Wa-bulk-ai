@@ -76,11 +76,13 @@ router.get(
     const q = String(req.query.q || '').trim().toLowerCase();
     const category = String(req.query.category || '').trim();
     const platform = String(req.query.platform || '').trim().toLowerCase();
+    const ids = String(req.query.ids || '').split(',').map((x) => Number(x)).filter((x) => Number.isInteger(x) && x > 0);
     const sort = String(req.query.sort || 'default').trim().toLowerCase();
 
     // platform first (the provider has no platform field - see src/platforms.js), then category
     let pool = c.list;
-    if (platform && platform !== 'all') pool = pool.filter((s) => platforms.platformOf(s.category).key === platform);
+    if (ids.length) pool = c.list.filter((s) => ids.includes(Number(s.id)));
+    else if (platform && platform !== 'all') pool = pool.filter((s) => platforms.platformOf(s.category).key === platform);
 
     // categories are scoped to the chosen platform so the dropdown never offers an empty list
     const categories = [...new Set(pool.map((s) => s.category))].sort((a, b) => a.localeCompare(b));

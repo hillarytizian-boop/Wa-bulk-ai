@@ -404,3 +404,12 @@ tbody tr:last-child td { border-bottom: none; }
 
 @media (min-width: 560px) { .plat-grid { grid-template-columns: repeat(4, 1fr); } }
 @media (min-width: 760px) { .plat-grid { grid-template-columns: repeat(5, 1fr); } }
+
+/* starred services */
+.star {
+  background: transparent; border: none; padding: 3px; cursor: pointer;
+  color: var(--muted); line-height: 0; border-radius: 8px; flex: 0 0 auto;
+}
+.star:hover { color: #f7b955; background: rgba(247,185,85,.1); }
+.star.on { color: #f7b955; }
+.star.on svg { fill: currentColor; }

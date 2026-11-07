@@ -99,6 +99,41 @@ const SCHEMA = [
     ],
   },
   {
+    name: 'tickets',
+    columns: [
+      ['id', 'id'],
+      ['user_id', 'int', { notNull: true, references: 'users(id)' }],
+      ['subject', 'text', { notNull: true }],
+      ['status', 'text', { notNull: true, default: 'open' }],
+      ['last_reply_by', 'text', { notNull: true, default: 'user' }],
+      ['created_at', 'int', { notNull: true }],
+      ['updated_at', 'int', { notNull: true }],
+    ],
+    indexes: [['idx_tickets_user', 'user_id, id DESC'], ['idx_tickets_status', 'status']],
+  },
+  {
+    name: 'ticket_messages',
+    columns: [
+      ['id', 'id'],
+      ['ticket_id', 'int', { notNull: true, references: 'tickets(id)' }],
+      ['user_id', 'int'],
+      ['is_admin', 'flag', { notNull: true, default: 0 }],
+      ['body', 'text', { notNull: true }],
+      ['created_at', 'int', { notNull: true }],
+    ],
+    indexes: [['idx_ticket_msgs', 'ticket_id, id']],
+  },
+  {
+    name: 'favorites',
+    columns: [
+      ['id', 'id'],
+      ['user_id', 'int', { notNull: true, references: 'users(id)' }],
+      ['service_id', 'int', { notNull: true }],
+      ['created_at', 'int', { notNull: true }],
+    ],
+    indexes: [['idx_favorites_user', 'user_id, service_id']],
+  },
+  {
     name: 'audit_log',
     columns: [
       ['id', 'id'],
