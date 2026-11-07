@@ -2,6 +2,7 @@ const express = require('express');
 const rateLimit = require('express-rate-limit');
 const db = require('../db');
 const config = require('../config');
+const platforms = require('../platforms');
 const catalog = require('../catalog');
 const pricing = require('../pricing');
 const orders = require('../orders');
@@ -74,10 +75,27 @@ router.get(
     const settings = pricing.getSettings();
     const q = String(req.query.q || '').trim().toLowerCase();
     const category = String(req.query.category || '').trim();
+    const platform = String(req.query.platform || '').trim().toLowerCase();
+    const sort = String(req.query.sort || 'default').trim().toLowerCase();
 
-    let list = c.list;
+    // platform first (the provider has no platform field - see src/platforms.js), then category
+    let pool = c.list;
+    if (platform && platform !== 'all') pool = pool.filter((s) => platforms.platformOf(s.category).key === platform);
+
+    // categories are scoped to the chosen platform so the dropdown never offers an empty list
+    const categories = [...new Set(pool.map((s) => s.category))].sort((a, b) => a.localeCompare(b));
+
+    let list = pool;
     if (category && category !== 'All') list = list.filter((s) => s.category === category);
     if (q) list = list.filter((s) => s.name.toLowerCase().includes(q) || String(s.id) === q || s.category.toLowerCase().includes(q));
+
+    if (sort === 'cheap' || sort === 'expensive') {
+      const price = new Map(list.map((s) => [s.id, pricing.rateCentsPer1000(s.rate, settings)]));
+      const dir = sort === 'cheap' ? 1 : -1;
+      list = [...list].sort((a, b) => (price.get(a.id) - price.get(b.id)) * dir);
+    } else if (sort === 'name') {
+      list = [...list].sort((a, b) => a.name.localeCompare(b.name));
+    }
 
     const perPage = Math.min(200, Math.max(1, Number(req.query.per_page) || 20));
     const total = list.length;
@@ -88,7 +106,10 @@ router.get(
     res.set('Cache-Control', 'public, max-age=60');
     res.json({
       services: slice.map((s) => presentService(s, settings)),
-      categories: [...new Set(c.list.map((s) => s.category))].sort((a, b) => a.localeCompare(b)),
+      platform: platform && platform !== 'all' ? platform : null,
+      platforms: platforms.platformList(c.list),
+      categories,
+      sort,
       pagination: { page, per_page: perPage, total, pages },
     });
   })

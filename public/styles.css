@@ -381,3 +381,26 @@ tbody tr:last-child td { border-bottom: none; }
 }
 .refresh-pill.ok { color: var(--brand); }
 .refresh-pill.err { color: #ffb4b4; }
+
+/* platform picker (step 1 of the order flow) */
+.plat-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.plat {
+  display: flex; flex-direction: column; align-items: center; gap: 8px; text-align: center;
+  padding: 16px 8px 14px; border-radius: 16px;
+  background: var(--surface); border: 1px solid var(--line);
+  color: var(--text); text-decoration: none;
+}
+.plat:hover, .plat:focus-visible { background: var(--surface-2); border-color: #28405f; }
+.plat-ico {
+  width: 46px; height: 46px; border-radius: 14px; display: grid; place-items: center;
+  font-weight: 800; font-size: .95rem; letter-spacing: .03em; border: 1px solid;
+}
+.plat-ico.lg { width: 52px; height: 52px; flex: 0 0 52px; border-radius: 16px; font-size: 1.05rem; }
+.plat-name { font-size: .82rem; font-weight: 700; line-height: 1.2; }
+.plat-count { font-size: .68rem; color: var(--muted); }
+
+.backlink { display: inline-block; color: var(--muted); font-size: .86rem; margin-bottom: 14px; }
+.backlink:hover { color: var(--brand); }
+
+@media (min-width: 560px) { .plat-grid { grid-template-columns: repeat(4, 1fr); } }
+@media (min-width: 760px) { .plat-grid { grid-template-columns: repeat(5, 1fr); } }

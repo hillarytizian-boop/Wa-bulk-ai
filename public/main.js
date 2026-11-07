@@ -58,6 +58,7 @@
     wallet: '<rect x="3.3" y="6.6" width="17.4" height="12.4" rx="3.4"/><path d="M3.3 10.6h17.4"/>',
     more: '<path d="M4 7.2h16M4 12h16M4 16.8h10"/>',
     filter: '<path d="M4 7h16M7 12h10M10 17h4"/>',
+    search: '<circle cx="11" cy="11" r="6.4"/><path d="M15.8 15.8 20.5 20.5"/>',
     download: '<path d="M12 4.6v9.6M8.2 10.6 12 14.4l3.8-3.8M5.4 19h13.2"/>',
   };
 
@@ -378,122 +379,222 @@
           h('button', { class: 'btn ghost small', disabled: data.pagination.page >= data.pagination.pages, onclick: () => (location.hash = `#/services?${new URLSearchParams({ q, category, page: page + 1 })}`) }, 'Next'))));
   }
 
+  const orderView = (params) => (params.service ? orderFormView(params)
+    : params.platform ? orderBrowseView(params) : orderPlatformView());
+
   // ------------------------------------------------------------------ new order
-  async function orderView(params = {}) {
+  // Three steps, matching the smm.africa flow: pick a platform -> pick a category
+  // (with a "cheapest" sort) -> fill in the order form.
+  const SORTS = [
+    ['cheap', 'Cheapest first'],
+    ['expensive', 'Most expensive'],
+    ['name', 'Name A–Z'],
+    ['default', 'Provider order'],
+  ];
+  const sortWord = (s) => ({ cheap: 'cheapest first', expensive: 'most expensive first', name: 'name A–Z' }[s] || 'provider order');
+
+  const abbr = (name) => {
+    const w = String(name).replace(/[^A-Za-z0-9 ]/g, ' ').split(/\s+/).filter(Boolean);
+    if (!w.length) return '•';
+    return (w.length === 1 ? w[0].slice(0, 2) : w[0][0] + w[1][0]).toUpperCase();
+  };
+
+  const platTile = (p, href) => h('a', { class: 'plat', href },
+    h('span', {
+      class: 'plat-ico',
+      style: `color:${p.color};border-color:${p.color}55;background:${p.color}1f`,
+    }, abbr(p.name)),
+    h('span', { class: 'plat-name' }, p.name),
+    h('span', { class: 'plat-count' }, `${num(p.count)} services`));
+
+  /** Step 1 - the platform grid. */
+  async function orderPlatformView() {
     stopTimer();
-    let services;
-    try { services = (await loadServices({ per_page: 200 })).services; }
+    fill(view, pageHead('New order', 'Choose a platform first, then pick a category.'), h('div', { class: 'card' }, skeletons(3)));
+    let data;
+    try { data = await loadServices({ per_page: 1 }); }
     catch (e) { return fill(view, pageHead('New order'), errBox(e.message)); }
     if (stale()) return;
 
-    const preId = Number(params.service) || null;
-    const search = h('input', { type: 'search', placeholder: 'Search services…', autocomplete: 'off' });
-    const svcSel = h('select', { 'aria-label': 'Service' });
-    const formBox = h('div');
-    const infoBox = h('div', { class: 'muted' }, 'Choose a service to see its details.');
-    const hint = h('div', { class: 'hint' });
+    const search = h('input', { type: 'search', placeholder: `Search all ${num(data.pagination.total)} services…`, autocomplete: 'off' });
+    const submit = () => {
+      const q = search.value.trim();
+      location.hash = `#/order?${new URLSearchParams({ platform: 'all', q, sort: 'cheap', page: 1 })}`;
+    };
+    search.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') submit(); });
 
     fill(view,
-      pageHead('New order', 'Pick a service, paste your link and pay from your wallet.'),
-      h('div', { class: 'searchrow' }, search, h('button', { class: 'sq', 'aria-label': 'Filter' }, svg(ICO.filter, 20))),
-      h('label', null, 'Service'), svcSel, hint,
-      h('div', { class: 'card' }, h('h2', null, 'Order details'), formBox),
-      h('div', { class: 'card' }, h('h2', null, 'Service info'), infoBox));
+      pageHead('New order', 'Choose a platform first, then pick a category.'),
+      h('div', { class: 'searchrow' }, search,
+        h('button', { class: 'sq', 'aria-label': 'Search services', onclick: submit }, svg(ICO.search, 20))),
+      h('label', { style: 'margin:18px 0 10px' }, 'Platform'),
+      h('div', { class: 'plat-grid' },
+        data.platforms.map((p) => platTile(p, `#/order?platform=${encodeURIComponent(p.key)}&sort=cheap`)),
+        platTile({ key: 'all', name: 'All services', color: '#3ee07b', count: data.pagination.total },
+          '#/order?platform=all&sort=cheap')));
+  }
 
-    function renderOptions(selectedId) {
-      const q = search.value.trim().toLowerCase();
-      const list = services.filter((s) => !q || s.name.toLowerCase().includes(q) || String(s.id) === q);
-      const shown = list.slice(0, 300);
-      fill(svcSel,
-        h('option', { value: '' }, list.length ? 'Select a service…' : 'No matching services'),
-        shown.map((s) => h('option', { value: s.id }, `${s.name} — ${s.flat ? amt(s.rate_cents) : per1000(s.rate_cents)}`)));
-      hint.textContent = list.length > shown.length ? `Showing ${shown.length} of ${list.length}. Refine your search.` : `${list.length} service(s)`;
-      const target = selectedId || (preId && shown.some((s) => s.id === preId) ? preId : null);
-      if (target) { svcSel.value = String(target); showForm(services.find((s) => s.id === Number(target))); }
+  /** Step 2 - services for one platform, with the category list and the sort control. */
+  async function orderBrowseView(params) {
+    stopTimer();
+    const platform = params.platform || 'all';
+    const category = params.category || '';
+    const sort = params.sort || 'cheap';
+    const q = params.q || '';
+    const page = Number(params.page) || 1;
+
+    const link = (over = {}) => `#/order?${new URLSearchParams({
+      platform, category, sort, q, page: 1, ...over,
+    })}`;
+
+    fill(view, h('a', { class: 'backlink', href: '#/order' }, '← All platforms'), h('div', { class: 'card' }, skeletons(3)));
+    let data;
+    try { data = await loadServices({ platform, category, sort, q, page, per_page: 20 }); }
+    catch (e) { return fill(view, h('a', { class: 'backlink', href: '#/order' }, '← All platforms'), pageHead('New order'), errBox(e.message)); }
+    if (stale()) return;
+
+    const plat = data.platforms.find((p) => p.key === platform) || { name: 'All services', color: '#3ee07b', count: data.pagination.total };
+
+    const search = h('input', { type: 'search', placeholder: `Search ${plat.name} services…`, value: q, autocomplete: 'off' });
+    search.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') location.hash = link({ q: search.value.trim() }); });
+
+    const catSel = h('select', { 'aria-label': 'Category' },
+      h('option', { value: '' }, `All categories (${num(data.categories.length)})`),
+      data.categories.map((c) => h('option', { value: c, selected: c === category }, c)));
+    catSel.addEventListener('change', () => { location.hash = link({ category: catSel.value }); });
+
+    const sortSel = h('select', { 'aria-label': 'Sort by' },
+      SORTS.map(([v, label]) => h('option', { value: v, selected: v === sort }, label)));
+    sortSel.addEventListener('change', () => { location.hash = link({ sort: sortSel.value }); });
+
+    const row = (s) => h('div', { class: 'svc' },
+      h('div', { style: 'min-width:0' },
+        h('div', { class: 'name' }, s.name),
+        h('div', { class: 'meta' },
+          `${s.category} · ${s.flat ? 'per order' : `min ${num(s.min)} – max ${num(s.max)}`}${s.refill ? ' · refill' : ''}`)),
+      h('div', { class: 'svc-side' },
+        h('span', { class: 'price' }, s.flat ? amt(s.rate_cents) : per1000(s.rate_cents)),
+        h('a', { class: 'btn small', href: `#/order?service=${s.id}&platform=${encodeURIComponent(platform)}` }, 'Select')));
+
+    fill(view,
+      h('a', { class: 'backlink', href: '#/order' }, '← All platforms'),
+      h('div', { class: 'row', style: 'gap:12px;margin-bottom:14px' },
+        h('span', {
+          class: 'plat-ico lg',
+          style: `color:${plat.color};border-color:${plat.color}55;background:${plat.color}1f`,
+        }, abbr(plat.name)),
+        h('div', null,
+          h('h1', { style: 'margin:0' }, plat.name),
+          h('div', { class: 'muted', style: 'font-size:.85rem' }, `${num(data.pagination.total)} services`))),
+      h('div', { class: 'searchrow' }, search,
+        h('button', { class: 'sq', 'aria-label': 'Search', onclick: () => { location.hash = link({ q: search.value.trim() }); } }, svg(ICO.search, 20))),
+      h('label', null, 'Category'), catSel,
+      h('label', null, 'Sort by'), sortSel,
+      h('div', { class: 'countline' }, `${num(data.pagination.total)} service(s) · ${sortWord(sort)}`),
+      h('div', { class: 'card' },
+        data.services.length ? data.services.map(row) : h('p', { class: 'muted' }, 'No services match those filters.'),
+        h('div', { class: 'pagination' },
+          h('button', { class: 'btn ghost small', disabled: page <= 1, onclick: () => { location.hash = link({ page: page - 1 }); } }, 'Previous'),
+          h('span', { class: 'muted' }, `Page ${data.pagination.page} / ${data.pagination.pages}`),
+          h('button', { class: 'btn ghost small', disabled: page >= data.pagination.pages, onclick: () => { location.hash = link({ page: page + 1 }); } }, 'Next'))));
+  }
+
+  /** Step 3 - the order form for one service. */
+  async function orderFormView(params) {
+    stopTimer();
+    let service;
+    try { service = (await api(`/services/${Number(params.service) || 0}`)).service; }
+    catch (e) { return fill(view, pageHead('New order'), errBox(e.message)); }
+    if (stale()) return;
+
+    const back = params.platform ? `#/order?platform=${encodeURIComponent(params.platform)}&sort=cheap` : '#/order';
+    const form   = h('div');
+    const info   = h('div');
+    const inputs = {};
+    const def    = state.meta.fields;
+    const totalEl = h('div', { class: 'v big' }, '—');
+    const note   = h('div', { class: 'hint' });
+    const btn    = h('button', { class: 'btn block' }, 'Place order');
+
+    function localTotal() {
+      if (service.flat) return service.rate_cents;
+      const qty = Number(inputs.quantity && inputs.quantity.value);
+      if (!Number.isFinite(qty) || qty < 1) return 0;
+      return Math.ceil((service.rate_cents * qty) / 1000);
     }
 
-    function showForm(service) {
-      if (!service) return;
-      fill(formBox);
-      const inputs = {};
-      const def = state.meta.fields;
-      const totalEl = h('div', { class: 'v big' }, '—');
-      const note = h('div', { class: 'hint' });
-      const btn = h('button', { class: 'btn block' }, 'Place order');
-
-      function localTotal() {
-        if (service.flat) return service.rate_cents;
-        const q = Number(inputs.quantity && inputs.quantity.value);
-        if (!Number.isFinite(q) || q < 1) return 0;
-        return Math.ceil((service.rate_cents * q) / 1000);
-      }
-
-      let t = null;
-      function refreshQuote() {
-        const q = inputs.quantity ? Number(inputs.quantity.value) : 0;
-        const total = localTotal();
-        totalEl.textContent = total ? amt(total) : '—';
-        btn.textContent = `Place order${total ? ` · ${amt(total)}` : ''}`;
-        btn.disabled = !total;
-        clearTimeout(t);
-        t = setTimeout(async () => {
-          try {
-            const quote = await api(`/quote?${new URLSearchParams({ service: service.id, quantity: q || 0 })}`);
-            if (quote.problem) { note.textContent = quote.problem; btn.disabled = true; }
-            else {
-              note.textContent = '';
-              totalEl.textContent = amt(quote.price_cents);
-              btn.textContent = `Place order · ${amt(quote.price_cents)}`;
-              btn.disabled = !quote.price_cents;
-            }
-          } catch { /* keep the local estimate */ }
-        }, 250);
-      }
-
-      service.fields.forEach((field) => {
-        const meta = def[field] || { label: field, multiline: false };
-        if (field === 'quantity') {
-          const qty = h('input', { type: 'number', inputmode: 'numeric', min: service.min || 1, max: service.max || undefined, value: service.min || 1 });
-          inputs.quantity = qty;
-          qty.addEventListener('input', refreshQuote);
-          formBox.append(h('label', null, `Quantity (min ${num(service.min)}, max ${num(service.max)})`), qty);
-          return;
-        }
-        const input = meta.multiline
-          ? h('textarea', { placeholder: 'One per line' })
-          : h('input', { type: field === 'link' || field === 'media' ? 'url' : 'text', autocomplete: 'off', placeholder: field === 'link' ? 'https://…' : '' });
-        inputs[field] = input;
-        formBox.append(h('label', null, meta.label), input);
-      });
-
-      formBox.append(h('div', { class: 'divider' }),
-        h('div', null, h('div', { class: 'k', style: 'color:var(--muted);font-size:.72rem;text-transform:uppercase;letter-spacing:.07em;margin-bottom:6px' }, 'Total'), totalEl),
-        note, btn);
-
-      btn.addEventListener('click', async () => {
-        if (!state.user) { toast('Please log in to place an order.', true); location.hash = '#/login'; return; }
-        const body = { service: service.id };
-        for (const [k, el] of Object.entries(inputs)) body[k] = el.value.trim();
-        btn.disabled = true;
+    let t = null;
+    function refreshQuote() {
+      const qty = inputs.quantity ? Number(inputs.quantity.value) : 0;
+      const total = localTotal();
+      totalEl.textContent = total ? amt(total) : '—';
+      btn.textContent = `Place order${total ? ` · ${amt(total)}` : ''}`;
+      btn.disabled = !total;
+      clearTimeout(t);
+      t = setTimeout(async () => {
         try {
-          const res = await api('/orders', { method: 'POST', body });
-          setBalance(res.balance_cents);
-          toast(`Order #${res.order.id} placed.`);
-          location.hash = '#/orders';
-        } catch (e) { toast(e.message, true); btn.disabled = false; }
-      });
-
-      refreshQuote();
-      fill(infoBox,
-        h('div', { style: 'font-weight:700;color:var(--text)' }, service.name),
-        h('div', { class: 'meta' }, `${service.category} · ${service.type}`),
-        h('div', { class: 'price', style: 'margin-top:8px;font-weight:800' }, service.flat ? `${amt(service.rate_cents)} per order` : `${amt(service.rate_cents)} per 1000`),
-        h('p', { class: 'hint' }, service.description || ''));
+          const quote = await api(`/quote?${new URLSearchParams({ service: service.id, quantity: qty || 0 })}`);
+          if (quote.problem) { note.textContent = quote.problem; btn.disabled = true; }
+          else {
+            note.textContent = '';
+            totalEl.textContent = amt(quote.price_cents);
+            btn.textContent = `Place order · ${amt(quote.price_cents)}`;
+            btn.disabled = !quote.price_cents;
+          }
+        } catch { /* keep the local estimate */ }
+      }, 250);
     }
 
-    search.addEventListener('input', () => renderOptions());
-    svcSel.addEventListener('change', () => showForm(services.find((s) => s.id === Number(svcSel.value))));
-    renderOptions();
+    service.fields.forEach((field) => {
+      const meta = def[field] || { label: field, multiline: false };
+      if (field === 'quantity') {
+        const qty = h('input', { type: 'number', inputmode: 'numeric', min: service.min || 1, max: service.max || undefined, value: service.min || 1 });
+        inputs.quantity = qty;
+        qty.addEventListener('input', refreshQuote);
+        form.append(h('label', null, `Quantity (min ${num(service.min)}, max ${num(service.max)})`), qty);
+        return;
+      }
+      const input = meta.multiline
+        ? h('textarea', { placeholder: 'One per line' })
+        : h('input', { type: field === 'link' || field === 'media' ? 'url' : 'text', autocomplete: 'off', placeholder: field === 'link' ? 'https://…' : '' });
+      inputs[field] = input;
+      form.append(h('label', null, meta.label), input);
+    });
+
+    form.append(h('div', { class: 'divider' }),
+      h('div', null,
+        h('div', { class: 'k', style: 'color:var(--muted);font-size:.72rem;text-transform:uppercase;letter-spacing:.07em;margin-bottom:6px' }, 'Total'),
+        totalEl),
+      note, btn);
+
+    btn.addEventListener('click', async () => {
+      if (!state.user) { toast('Please log in to place an order.', true); location.hash = '#/login'; return; }
+      const body = { service: service.id };
+      for (const [k, el] of Object.entries(inputs)) body[k] = el.value.trim();
+      btn.disabled = true;
+      try {
+        const res = await api('/orders', { method: 'POST', body });
+        setBalance(res.balance_cents);
+        toast(`Order #${res.order.id} placed.`);
+        location.hash = '#/orders';
+      } catch (e) { toast(e.message, true); btn.disabled = false; }
+    });
+
+    fill(info,
+      h('div', { style: 'font-weight:700;color:var(--text)' }, service.name),
+      h('div', { class: 'meta' }, `${service.category} · ${service.type}`),
+      h('div', { style: 'margin-top:10px;font-weight:800' }, service.flat ? `${amt(service.rate_cents)} per order` : `${amt(service.rate_cents)} per 1000`),
+      h('div', { class: 'meta', style: 'margin-top:6px' },
+        `${service.min && service.max ? `min ${num(service.min)} · max ${num(service.max)}` : ''}${service.refill ? ' · refill available' : ''}${service.cancel ? ' · cancel available' : ''}`),
+      service.description ? h('p', { class: 'hint' }, service.description) : null);
+
+    fill(view,
+      h('a', { class: 'backlink', href: back }, '← Back to services'),
+      pageHead('Order', service.name),
+      h('div', { class: 'card' }, h('h2', null, 'Order details'), form),
+      h('div', { class: 'card' }, h('h2', null, 'Service info'), info));
+
+    refreshQuote();
   }
 
   // ------------------------------------------------------------------ orders
