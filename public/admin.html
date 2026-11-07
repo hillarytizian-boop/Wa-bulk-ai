@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#050d18" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>Admin | HilaPanel</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body class="admin-body">
+    <header class="admin-bar">
+      <div class="admin-brand">
+        <span class="admin-dot" aria-hidden="true"></span>
+        <div>
+          <div class="admin-title">HilaPanel admin</div>
+          <div class="admin-sub" id="adminWho">Checking your session…</div>
+        </div>
+      </div>
+      <div class="admin-actions">
+        <a class="btn ghost small" href="/">Open panel</a>
+        <button class="btn ghost small" id="signOut" hidden>Sign out</button>
+      </div>
+    </header>
+
+    <main class="admin-main" id="adminView" aria-live="polite"></main>
+    <div class="toasts" id="toasts" role="status"></div>
+    <script src="/admin.js"></script>
+  </body>
+</html>

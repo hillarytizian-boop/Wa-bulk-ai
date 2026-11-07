@@ -144,7 +144,7 @@
   const PAGE_TITLES = {
     '': 'Dashboard', orders: 'Orders', order: 'New order', services: 'Services',
     login: 'Log in', register: 'Create account', wallet: 'Wallet', mass: 'Mass order',
-    drip: 'Drip campaigns', admin: 'Admin', support: 'Support', ticket: 'Ticket', trending: 'Trending',
+    drip: 'Drip campaigns', support: 'Support', ticket: 'Ticket', trending: 'Trending',
   };
 
   const pageHead = (title, sub, action) => h('div', { class: 'page-head' },
@@ -233,7 +233,6 @@
     // overflow menu
     const links = [['', 'Dashboard'], ['order', 'New order'], ['trending', 'Trending'], ['services', 'Pricing'], ['mass', 'Mass order']];
     if (state.user) links.push(['orders', 'Orders'], ['wallet', 'Wallet'], ['support', 'Support']);
-    if (state.user && state.user.is_admin) links.push(['admin', 'Admin']);
     const kids = links.map(([r, label]) => h('a', { href: `#/${r}`, class: route === r ? 'active' : '' }, label));
     kids.push(state.user
       ? h('a', { href: '#', onclick: (ev) => { ev.preventDefault(); closeMenu(); logout(); } }, 'Log out')
@@ -252,7 +251,7 @@
 
     const moreBtn = h('a', {
       href: '#',
-      class: ['admin', 'services', 'support', 'trending', 'mass', 'drip'].includes(baseRoute) ? 'active' : '',
+      class: ['services', 'support', 'trending', 'mass', 'drip'].includes(baseRoute) ? 'active' : '',
     },
       h('span', { class: 'ico-wrap' }, svg(ICO.more, 22)),
       h('span', null, 'More'),
@@ -974,7 +973,10 @@
         await loadFavorites();
         renderChrome();
         toast(isLogin ? 'Welcome back!' : 'Account created.');
-        location.hash = '#/';
+        const next = params.next;
+        // only ever an in-site absolute path, never a full URL (open-redirect guard)
+        if (typeof next === 'string' && /^\/(?![\/\\])/.test(next)) location.assign(next);
+        else location.hash = '#/';
       } catch (e) { err.textContent = e.message; btn.disabled = false; }
     };
     btn.addEventListener('click', submit);
@@ -1051,7 +1053,7 @@
              h('div', { class: 'row', style: 'margin-top:12px' }, [100, 250, 500, 1000, 2500].map((v) => h('button', { class: 'btn ghost small', onclick: () => { amount.value = v; } }, `KSh ${v}`))),
              err, btn,
              h('p', { class: 'hint' }, 'You will receive an M-Pesa prompt. Your wallet is credited only after Safaricom confirms the payment.')]
-          : h('p', { class: 'muted' }, 'M-Pesa is not configured yet. Ask the admin to credit your wallet.')),
+          : h('p', { class: 'muted' }, 'Mobile money is not switched on yet. Top-ups will appear here as soon as the payment provider is connected.')),
       h('div', { class: 'card' },
         h('h2', null, 'Recent transactions'),
         data.transactions.length
@@ -1067,128 +1069,6 @@
               h('tbody', null, data.topups.map((t) => h('tr', null,
                 h('td', null, fmtDate(t.created_at)), h('td', { class: 'num' }, amt(t.credited_cents)), h('td', null, badge(t.status)), h('td', null, t.receipt || '—')))))))
         : null);
-  }
-
-  // ------------------------------------------------------------------ admin
-  async function adminView() {
-    if (!requireLogin()) return;
-    if (!state.user.is_admin) return fill(view, pageHead('Admin'), errBox('Admin access required.'));
-    stopTimer();
-    fill(view, pageHead('Admin', 'Provider balance, revenue and profit in KES.'), h('div', { class: 'card' }, skeletons(3)));
-
-    let stats;
-    try { stats = await api('/admin/stats'); }
-    catch (e) { return fill(view, pageHead('Admin'), errBox(e.message)); }
-    if (stale()) return;
-
-    const markup = h('input', { type: 'number', step: '0.01', min: '0', value: stats.settings.markup });
-    const rate = h('input', { type: 'number', step: '0.01', min: '0', value: stats.settings.kes_per_usd });
-    const fee = h('input', { type: 'number', step: '1', min: '0', value: stats.settings.fee_kes });
-    const msg = h('div', { class: 'hint' });
-    const save = h('button', { class: 'btn block' }, 'Save settings');
-    save.addEventListener('click', async () => {
-      try {
-        await api('/admin/settings', { method: 'POST', body: { markup: Number(markup.value), kes_per_usd: Number(rate.value), fee_kes: Number(fee.value) } });
-        msg.textContent = 'Saved. New prices apply immediately.';
-        toast('Settings saved');
-      } catch (e) { msg.textContent = e.message; }
-    });
-
-    const provider = stats.provider_balance || {};
-
-    fill(view,
-      pageHead('Admin', 'Provider balance, revenue and profit in KES.'),
-      h('div', { class: 'grid stats' },
-        h('div', { class: 'stat' }, h('div', { class: 'k' }, 'Revenue'), h('div', { class: 'v' }, kes(stats.revenue_cents))),
-        h('div', { class: 'stat' }, h('div', { class: 'k' }, 'Provider cost'), h('div', { class: 'v' }, kes(stats.provider_cost_cents))),
-        h('div', { class: 'stat' }, h('div', { class: 'k' }, 'Profit'), h('div', { class: 'v' }, kes(stats.profit_cents))),
-        h('div', { class: 'stat' }, h('div', { class: 'k' }, 'Provider balance'), h('div', { class: 'v' }, provider.error ? '—' : `$${Number(provider.balance_usd || 0).toFixed(2)}`))),
-      h('div', { class: 'card' },
-        h('h2', null, 'Pricing'),
-        h('label', null, 'Markup (0.30 = +30%)'), markup,
-        h('label', null, 'KES per USD'), rate,
-        h('label', null, 'Fixed fee per price (KES)'), fee,
-        save, msg,
-        h('p', { class: 'hint' }, 'Customer price = provider rate × (1 + markup) × KES/USD + fee.')),
-      h('div', { class: 'card' }, h('h2', null, 'Overview'), h('table', null, h('tbody', null,
-        [['Customers', num(stats.users)], ['Customer balances', kes(stats.customer_balances_cents)], ['Orders', num(stats.orders)],
-         ['Pending M-Pesa', num(stats.pending_topups)], ['Needs review', num(stats.needs_review)]]
-          .map(([k, v]) => h('tr', null, h('td', null, k), h('td', { class: 'num' }, v)))))));
-
-    const reviewBox = h('div', { class: 'card' }, h('h2', null, 'Needs review'), skeletons(2));
-    const usersBox = h('div', { class: 'card' }, h('h2', null, 'Customers'), skeletons(2));
-    const ticketsBox = h('div', { class: 'card' }, h('h2', null, 'Support tickets'), skeletons(2));
-    view.append(reviewBox, usersBox, ticketsBox);
-
-    async function action(ev, id, kind) {
-      ev.target.disabled = true;
-      try {
-        await api(`/admin/orders/${id}/${kind}`, { method: 'POST' });
-        toast(kind === 'retry' ? 'Retry sent' : 'Refunded');
-        adminView();
-      } catch (e) { toast(e.message, true); ev.target.disabled = false; }
-    }
-
-    try {
-      const { orders: review } = await api('/admin/orders?status=needs_review');
-      if (stale()) return;
-      fill(reviewBox,
-        h('h2', null, 'Needs review'),
-        h('p', { class: 'hint' }, 'Provider outcome unknown. Retry reuses the same idempotency key; only refund after checking the provider dashboard.'),
-        review.length
-          ? h('div', { class: 'table-wrap' }, h('table', null,
-              h('thead', null, h('tr', null, h('th', null, 'Order'), h('th', null, 'Customer'), h('th', { class: 'num' }, 'Price'), h('th', null, 'Error'), h('th', null, ''))),
-              h('tbody', null, review.map((o) => h('tr', null,
-                h('td', null, `#${o.id}`, h('div', { class: 'meta' }, o.service_name)),
-                h('td', null, o.email),
-                h('td', { class: 'num' }, kes(o.price_cents)),
-                h('td', { class: 'meta' }, o.error || ''),
-                h('td', null, h('div', { class: 'row' },
-                  h('button', { class: 'btn small', onclick: (ev) => action(ev, o.id, 'retry') }, 'Retry'),
-                  h('button', { class: 'btn danger small', onclick: (ev) => action(ev, o.id, 'refund') }, 'Refund'))))))))
-          : h('p', { class: 'muted' }, 'Nothing waiting for review.'));
-    } catch (e) { fill(reviewBox, h('h2', null, 'Needs review'), errBox(e.message)); }
-
-    try {
-      const { tickets } = await api('/tickets?scope=all');
-      if (stale()) return;
-      fill(ticketsBox,
-        h('h2', null, 'Support tickets'),
-        tickets.length
-          ? h('div', { class: 'table-wrap' }, h('table', null,
-              h('thead', null, h('tr', null, h('th', null, 'Ticket'), h('th', null, 'Customer'), h('th', null, 'Status'), h('th', null, ''))),
-              h('tbody', null, tickets.map((t) => h('tr', null,
-                h('td', null, `#${t.id}`, h('div', { class: 'meta' }, t.subject)),
-                h('td', null, t.email || '—'),
-                h('td', null, ticketBadge(t)),
-                h('td', null, h('a', { class: 'btn ghost small', href: `#/support/${t.id}` }, 'Open')))))))
-          : h('p', { class: 'muted' }, 'No tickets.'));
-    } catch (e) { fill(ticketsBox, h('h2', null, 'Support tickets'), errBox(e.message)); }
-
-    try {
-      const { users } = await api('/admin/users');
-      if (stale()) return;
-      fill(usersBox,
-        h('h2', null, 'Customers'),
-        h('div', { class: 'table-wrap' }, h('table', null,
-          h('thead', null, h('tr', null, h('th', null, 'Email'), h('th', { class: 'num' }, 'Balance'), h('th', null, 'Adjust (KES)'))),
-          h('tbody', null, users.map((u) => {
-            const amountField = h('input', { type: 'number', step: '1', placeholder: '+500 / -100' });
-            const note = h('input', { type: 'text', placeholder: 'Reason' });
-            const apply = h('button', { class: 'btn small', onclick: async () => {
-              apply.disabled = true;
-              try {
-                await api(`/admin/users/${u.id}/credit`, { method: 'POST', body: { amount_kes: Number(amountField.value), note: note.value } });
-                toast('Wallet adjusted');
-                adminView();
-              } catch (e) { toast(e.message, true); apply.disabled = false; }
-            } }, 'Apply');
-            return h('tr', null,
-              h('td', null, u.email, u.is_admin ? h('span', { class: 'badge' }, ' admin') : null),
-              h('td', { class: 'num' }, kes(u.balance_cents)),
-              h('td', null, h('div', { class: 'row' }, amountField, note, apply)));
-          })))));
-    } catch (e) { fill(usersBox, h('h2', null, 'Customers'), errBox(e.message)); }
   }
 
   // ------------------------------------------------------------------ support
@@ -1317,6 +1197,7 @@
     renderChrome();
     window.scrollTo({ top: 0 });
     fill(view);
+    if (name === 'admin') { location.replace('/admin'); return; }
     if (name.startsWith('support/')) {
       state.route = 'support';
       renderChrome();
@@ -1334,7 +1215,6 @@
       case 'drip': return dripView();
       case 'support': return supportView();
       case 'wallet': return walletView();
-      case 'admin': return adminView();
       default:
         return fill(view, pageHead('Not found'), h('p', { class: 'muted' }, 'That page does not exist.'),
           h('a', { class: 'btn', href: '#/' }, 'Go home'));

@@ -5,7 +5,7 @@ const pricing = require('../pricing');
 const orders = require('../orders');
 const audit = require('../audit');
 const { HttpError, wrap } = require('../errors');
-const { toCents, microsToUsd } = require('../money');
+const { microsToUsd } = require('../money');
 const { requireAuth, requireAdmin } = require('./auth');
 
 const router = express.Router();
@@ -98,39 +98,6 @@ router.get(
         created_at: iso(u.created_at),
       })),
     });
-  })
-);
-
-// Manual wallet adjustment (positive credit or negative correction), in KES.
-router.post(
-  '/users/:id/credit',
-  wrap(async (req, res) => {
-    const amountKes = Number(req.body && req.body.amount_kes);
-    if (!Number.isFinite(amountKes) || amountKes === 0 || Math.abs(amountKes) > 1000000) {
-      throw new HttpError(400, 'Enter a non-zero KES amount');
-    }
-    const note = String((req.body && req.body.note) || 'Admin adjustment').slice(0, 120);
-    const cents = toCents(amountKes);
-    const id = Number(req.params.id);
-
-    await db.tx(async (t) => {
-      const u = await t.one('SELECT balance_cents FROM users WHERE id = $1 FOR UPDATE', [id]);
-      if (!u) throw new HttpError(404, 'User not found');
-      if (Number(u.balance_cents) + cents < 0) throw new HttpError(400, 'That would make the balance negative');
-      await t.run('UPDATE users SET balance_cents = balance_cents + $1 WHERE id = $2', [cents, id]);
-      await t.run('INSERT INTO transactions (user_id, amount_cents, type, ref, note, created_at) VALUES ($1,$2,$3,$4,$5,$6)', [
-        id,
-        cents,
-        'admin',
-        null,
-        note,
-        now(),
-      ]);
-    });
-
-    const u = await db.one('SELECT balance_cents FROM users WHERE id = $1', [id]);
-    audit.record(req, 'wallet.adjust', { target: `user:${id}`, detail: `${amountKes} KES - ${note}` });
-    res.json({ balance_cents: Number(u.balance_cents) });
   })
 );
 

@@ -441,3 +441,26 @@ tbody tr:last-child td { border-bottom: none; }
 }
 .tchip svg { fill: currentColor; stroke: none; opacity: .85; }
 .tchip:hover { border-color: #28405f; }
+
+/* ------------------------------------------------------------------ admin console */
+/* Separate page (/admin) - same tokens as the panel, none of the panel chrome. */
+.admin-body {
+  display: block; min-height: 100vh; padding: 0 0 60px;
+  background: radial-gradient(1000px 620px at 80% -8%, #0b2137 0%, var(--bg) 62%);
+}
+.admin-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 14px;
+  flex-wrap: wrap; max-width: 1040px; margin: 0 auto; padding: 18px 18px 6px;
+}
+.admin-brand { display: flex; align-items: center; gap: 12px; }
+.admin-dot {
+  width: 11px; height: 11px; border-radius: 999px; background: var(--brand);
+  box-shadow: 0 0 0 5px rgba(62, 224, 123, .14);
+}
+.admin-title { font-weight: 800; letter-spacing: -.01em; }
+.admin-sub { color: var(--muted); font-size: .74rem; margin-top: 2px; }
+.admin-actions { display: flex; gap: 8px; }
+.admin-main { max-width: 1040px; margin: 0 auto; padding: 10px 18px 0; display: grid; gap: 14px; }
+.admin-main .card { margin: 0; }
+.admin-main .card h2 { margin-bottom: 10px; }
+.admin-main .err { color: #ffb4b4; }

@@ -117,8 +117,18 @@ function createApp() {
     path.join(process.cwd(), 'public'),
   ].find((dir) => fs.existsSync(path.join(dir, 'index.html')));
 
+  // The admin console is a separate page on purpose: nothing admin-related ships in the
+  // customer SPA any more. All of its data still comes from /api/admin/*, which returns 401
+  // without a session and 403 without is_admin.
+  const rootDir = staticDir || path.join(__dirname, '..', 'public');
+  app.get(['/admin', '/admin.html'], (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('X-Robots-Tag', 'noindex, nofollow');
+    res.sendFile(path.join(rootDir, 'admin.html'));
+  });
+
   app.use(
-    express.static(staticDir || path.join(__dirname, '..', 'public'), {
+    express.static(rootDir, {
       maxAge: config.isProd ? '1h' : 0,
       setHeaders: (res, filePath) => {
         if (filePath.endsWith('index.html')) res.setHeader('Cache-Control', 'no-cache');
