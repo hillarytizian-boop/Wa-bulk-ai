@@ -496,8 +496,7 @@
         }, 'Refresh')));
   }
 
-  const platTile = (p, href, hot) => h('a', { class: 'plat', href },
-    hot ? h('span', { class: 'plat-hot', title: 'Trending on HilaPanel' }, svg(ICO.flame, 11)) : null,
+  const platTile = (p, href) => h('a', { class: 'plat', href },
     h('span', {
       class: 'plat-ico',
       style: `color:${p.color};border-color:${p.color}55;background:${p.color}1f`,
@@ -510,16 +509,9 @@
     stopTimer();
     fill(view, pageHead('New order', 'Choose a platform first, then pick a category.'), h('div', { class: 'card' }, skeletons(3)));
     let data;
-    let trend = null;
-    try {
-      // The chooser also shows what is hot right now; a trending failure must not block ordering.
-      [data, trend] = await Promise.all([
-        loadServices({ per_page: 1 }),
-        loadTrending().catch(() => null),
-      ]);
-    } catch (e) { return fill(view, pageHead('New order'), errBox(e.message)); }
+    try { data = await loadServices({ per_page: 1 }); }
+    catch (e) { return fill(view, pageHead('New order'), errBox(e.message)); }
     if (stale()) return;
-    const hotKeys = new Set(((trend && trend.platforms) || []).map((p) => p.key));
 
     const search = h('input', { type: 'search', placeholder: `Search all ${num(data.pagination.total)} services…`, autocomplete: 'off' });
     const submit = () => {
@@ -528,19 +520,35 @@
     };
     search.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') submit(); });
 
+    // Every tile is kept in a Map so the hot badges can be patched in when /trending
+    // answers - the chooser must never wait on it, a cold catalog load takes seconds.
+    const tiles = new Map();
+    const tile = (p, href) => { const el = platTile(p, href); tiles.set(p.key, el); return el; };
+    const grid = h('div', { class: 'plat-grid' },
+      tile({ key: 'trend', name: 'Trending', color: '#ff6b35', label: 'Hot right now' }, '#/trending'),
+      state.favorites.size
+        ? tile({ key: 'fav', name: 'Starred', color: '#f7b955', count: state.favorites.size }, '#/order?favorites=1')
+        : null,
+      data.platforms.map((p) => tile(p, `#/order?platform=${encodeURIComponent(p.key)}&sort=cheap`)),
+      tile({ key: 'all', name: 'All services', color: '#3ee07b', count: data.pagination.total },
+        '#/order?platform=all&sort=cheap'));
+
+    loadTrending().then((trend) => {
+      if (!trend || stale()) return;
+      for (const p of trend.platforms) {
+        const el = tiles.get(p.key);
+        if (el && !el.querySelector('.plat-hot')) {
+          el.prepend(h('span', { class: 'plat-hot', title: 'Trending on HilaPanel' }, svg(ICO.flame, 11)));
+        }
+      }
+    }).catch(() => { /* trending is decoration only */ });
+
     fill(view,
       pageHead('New order', 'Choose a platform first, then pick a category.'),
       h('div', { class: 'searchrow' }, search,
         h('button', { class: 'sq', 'aria-label': 'Search services', onclick: submit }, svg(ICO.search, 20))),
       h('label', { style: 'margin:18px 0 10px' }, 'Platform'),
-      h('div', { class: 'plat-grid' },
-        platTile({ key: 'trend', name: 'Trending', color: '#ff6b35', label: 'Hot right now' }, '#/trending'),
-        state.favorites.size
-          ? platTile({ key: 'fav', name: 'Starred', color: '#f7b955', count: state.favorites.size }, '#/order?favorites=1')
-          : null,
-        data.platforms.map((p) => platTile(p, `#/order?platform=${encodeURIComponent(p.key)}&sort=cheap`, hotKeys.has(p.key))),
-        platTile({ key: 'all', name: 'All services', color: '#3ee07b', count: data.pagination.total },
-          '#/order?platform=all&sort=cheap')));
+      grid);
   }
 
   /** Step 2 - services for one platform, with the category list and the sort control. */
