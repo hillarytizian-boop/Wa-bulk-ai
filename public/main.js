@@ -62,6 +62,7 @@
     star: '<path d="m12 3.9 2.6 5.3 5.9.9-4.3 4.1 1 5.9-5.2-2.8-5.2 2.8 1-5.9L3.5 10.1l5.9-.9z"/>',
     chat: '<path d="M20.5 12c0 4-3.8 7.2-8.5 7.2-1 0-2-.15-2.9-.42L4.2 20.4l1.4-3.6A6.9 6.9 0 0 1 3.5 12c0-4 3.8-7.2 8.5-7.2s8.5 3.2 8.5 7.2z"/>',
     download: '<path d="M12 4.6v9.6M8.2 10.6 12 14.4l3.8-3.8M5.4 19h13.2"/>',
+    flame: '<path d="M12 3.2c3.4 4.1 5.7 6.2 5.7 9.5A5.7 5.7 0 0 1 12 18.4a5.7 5.7 0 0 1-5.7-5.7c0-3.3 2.3-5.4 5.7-9.5z"/><path d="M12 18.4a2.8 2.8 0 0 0 2.8-2.8c0-1.7-1.2-2.7-2.8-4.8-1.6 2.1-2.8 3.1-2.8 4.8a2.8 2.8 0 0 0 2.8 2.8z"/>',
   };
 
   const GOOGLE_G = `<svg viewBox="0 0 48 48" width="18" height="18" aria-hidden="true">
@@ -143,7 +144,7 @@
   const PAGE_TITLES = {
     '': 'Dashboard', orders: 'Orders', order: 'New order', services: 'Services',
     login: 'Log in', register: 'Create account', wallet: 'Wallet', mass: 'Mass order',
-    drip: 'Drip campaigns', admin: 'Admin', support: 'Support', ticket: 'Ticket',
+    drip: 'Drip campaigns', admin: 'Admin', support: 'Support', ticket: 'Ticket', trending: 'Trending',
   };
 
   const pageHead = (title, sub, action) => h('div', { class: 'page-head' },
@@ -230,10 +231,8 @@
     }
 
     // overflow menu
-    const links = [['', 'Dashboard'], ['order', 'New order'], ['services', 'Pricing'], ['mass', 'Mass order']];
-    if (state.user) links.push(['orders', 'Orders'], ['wallet', 'Wallet']);
-    if (state.user) links.push(['support', 'Support']);
-    links.push(['services', 'Pricing']);
+    const links = [['', 'Dashboard'], ['order', 'New order'], ['trending', 'Trending'], ['services', 'Pricing'], ['mass', 'Mass order']];
+    if (state.user) links.push(['orders', 'Orders'], ['wallet', 'Wallet'], ['support', 'Support']);
     if (state.user && state.user.is_admin) links.push(['admin', 'Admin']);
     const kids = links.map(([r, label]) => h('a', { href: `#/${r}`, class: route === r ? 'active' : '' }, label));
     kids.push(state.user
@@ -253,12 +252,19 @@
 
     const moreBtn = h('a', {
       href: '#',
-      class: ['admin', 'services'].includes(route) ? 'active' : '',
+      class: ['admin', 'services', 'support', 'trending', 'mass', 'drip'].includes(baseRoute) ? 'active' : '',
     },
       h('span', { class: 'ico-wrap' }, svg(ICO.more, 22)),
       h('span', null, 'More'),
       pending ? h('span', { class: 'nav-badge' }, pending > 9 ? '9+' : String(pending)) : null);
-    moreBtn.addEventListener('click', (ev) => { ev.preventDefault(); closeMenu(); toggleMenu(); });
+    // stopPropagation matters: the document-level "click outside" handler would otherwise
+    // close the sheet in the same tick, which made the More button look dead.
+    moreBtn.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      closePopover();
+      toggleMenu();
+    });
 
     fill(document.getElementById('tabbar'),
       item('#/', 'Home', ICO.home, route === '' || route === 'order'),
@@ -306,8 +312,9 @@
     fill(view,
       h('h1', null, 'Dashboard'),
       h('p', { class: 'sub' }, name ? `Welcome back, ${name}. Here's your panel overview.` : 'Buy followers, likes and views — pay with M-Pesa.'),
-      h('div', { style: 'margin-bottom:16px' },
-        h('a', { class: 'btn', href: state.user ? '#/order' : '#/login' }, state.user ? 'New order' : 'Get started')),
+      h('div', { class: 'row', style: 'gap:10px;margin-bottom:16px' },
+        h('a', { class: 'btn', href: state.user ? '#/order' : '#/login' }, state.user ? 'New order' : 'Get started'),
+        h('a', { class: 'btn ghost', href: '#/trending' }, 'What\'s trending')),
       h('div', { class: 'row', style: 'justify-content:flex-end;margin-bottom:16px' }, pill),
 
       h('div', { class: 'card' },
@@ -429,22 +436,90 @@
     },
   }, svg(ICO.star, 18));
 
-  const platTile = (p, href) => h('a', { class: 'plat', href },
+  // ---------------------------------------------------------------- trending
+  // /api/trending scores real activity (orders x3 + stars, last 30 days) and tops the list
+  // up with cheap picks so the screen is never empty. Cached for a minute client-side.
+  let trendingCache = null;
+  async function loadTrending(force) {
+    if (!force && trendingCache && Date.now() - trendingCache.at < 60000) return trendingCache.data;
+    const data = await api('/trending');
+    trendingCache = { at: Date.now(), data };
+    return data;
+  }
+
+  const trendingRow = (s, i) => h('div', { class: 'svc' },
+    h('span', { class: 'rank' }, String(i + 1)),
+    h('div', { style: 'min-width:0;flex:1' },
+      h('div', { class: 'row', style: 'gap:8px;align-items:flex-start;flex-wrap:nowrap' },
+        h('div', { class: 'name', style: 'flex:1' }, s.name),
+        starBtn(s)),
+      h('div', { class: 'meta' },
+        `${s.platform ? `${s.platform.name} · ` : ''}${s.category} · ${s.flat ? 'per order' : `min ${num(s.min)} – max ${num(s.max)}`}`
+        + (s.orders_30d ? ` · ${num(s.orders_30d)} sold` : ''))),
+    h('div', { class: 'svc-side' },
+      h('span', { class: 'price' }, s.flat ? amt(s.rate_cents) : per1000(s.rate_cents)),
+      h('a', { class: 'btn small', href: `#/order?service=${s.id}` }, 'Order')));
+
+  async function trendingView() {
+    stopTimer();
+    fill(view, pageHead('Trending', 'What other customers are buying right now.'),
+      h('div', { class: 'card' }, skeletons(4)));
+    let data;
+    try { data = await loadTrending(); }
+    catch (e) { return fill(view, pageHead('Trending'), errBox(e.message)); }
+    if (stale()) return;
+
+    fill(view,
+      h('a', { class: 'backlink', href: '#/order' }, '← All platforms'),
+      pageHead('Trending', data.source === 'activity'
+        ? `Most ordered services in the last ${data.window_days} days, plus the ones people star most.`
+        : 'Popular picks from the catalogue — the trend starts with your first order.'),
+      data.platforms.length ? h('div', { class: 'tchips' },
+        data.platforms.map((p) => h('a', {
+          class: 'tchip',
+          href: `#/order?platform=${encodeURIComponent(p.key)}&sort=cheap`,
+          style: `color:${p.color}`,
+        }, svg(ICO.flame, 14), h('span', null, p.name)))) : null,
+      h('div', { class: 'card'},
+        data.services.length ? data.services.map(trendingRow)
+          : h('p', { class: 'muted' }, 'Nothing trending yet — check back soon.')),
+      h('div', { class: 'row', style: 'gap:10px;margin-top:14px' },
+        h('a', { class: 'btn ghost small', href: '#/order' }, 'Browse all platforms'),
+        h('button', {
+          class: 'btn ghost small',
+          onclick: async (ev) => {
+            const el = ev.currentTarget;
+            el.disabled = true; el.textContent = 'Refreshing…';
+            try { await loadTrending(true); trendingCache = null; location.hash = '#/trending'; route(); }
+            catch (e) { toast(e.message, true); el.disabled = false; el.textContent = 'Refresh'; }
+          },
+        }, 'Refresh')));
+  }
+
+  const platTile = (p, href, hot) => h('a', { class: 'plat', href },
+    hot ? h('span', { class: 'plat-hot', title: 'Trending on HilaPanel' }, svg(ICO.flame, 11)) : null,
     h('span', {
       class: 'plat-ico',
       style: `color:${p.color};border-color:${p.color}55;background:${p.color}1f`,
     }, abbr(p.name)),
     h('span', { class: 'plat-name' }, p.name),
-    h('span', { class: 'plat-count' }, `${num(p.count)} services`));
+    h('span', { class: 'plat-count' }, p.label || `${num(p.count)} services`));
 
   /** Step 1 - the platform grid. */
   async function orderPlatformView() {
     stopTimer();
     fill(view, pageHead('New order', 'Choose a platform first, then pick a category.'), h('div', { class: 'card' }, skeletons(3)));
     let data;
-    try { data = await loadServices({ per_page: 1 }); }
-    catch (e) { return fill(view, pageHead('New order'), errBox(e.message)); }
+    let trend = null;
+    try {
+      // The chooser also shows what is hot right now; a trending failure must not block ordering.
+      [data, trend] = await Promise.all([
+        loadServices({ per_page: 1 }),
+        loadTrending().catch(() => null),
+      ]);
+    } catch (e) { return fill(view, pageHead('New order'), errBox(e.message)); }
     if (stale()) return;
+    const hotKeys = new Set(((trend && trend.platforms) || []).map((p) => p.key));
 
     const search = h('input', { type: 'search', placeholder: `Search all ${num(data.pagination.total)} services…`, autocomplete: 'off' });
     const submit = () => {
@@ -459,10 +534,11 @@
         h('button', { class: 'sq', 'aria-label': 'Search services', onclick: submit }, svg(ICO.search, 20))),
       h('label', { style: 'margin:18px 0 10px' }, 'Platform'),
       h('div', { class: 'plat-grid' },
+        platTile({ key: 'trend', name: 'Trending', color: '#ff6b35', label: 'Hot right now' }, '#/trending'),
         state.favorites.size
           ? platTile({ key: 'fav', name: 'Starred', color: '#f7b955', count: state.favorites.size }, '#/order?favorites=1')
           : null,
-        data.platforms.map((p) => platTile(p, `#/order?platform=${encodeURIComponent(p.key)}&sort=cheap`)),
+        data.platforms.map((p) => platTile(p, `#/order?platform=${encodeURIComponent(p.key)}&sort=cheap`, hotKeys.has(p.key))),
         platTile({ key: 'all', name: 'All services', color: '#3ee07b', count: data.pagination.total },
           '#/order?platform=all&sort=cheap')));
   }
@@ -1242,6 +1318,7 @@
       case '': return dashboardView();
       case 'order': return orderView(params);
       case 'services': return servicesView(params);
+      case 'trending': return trendingView();
       case 'login': return authView('login', params);
       case 'register': return authView('register', params);
       case 'orders': return ordersView();

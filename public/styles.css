@@ -413,3 +413,31 @@ tbody tr:last-child td { border-bottom: none; }
 .star:hover { color: #f7b955; background: rgba(247,185,85,.1); }
 .star.on { color: #f7b955; }
 .star.on svg { fill: currentColor; }
+
+/* ------------------------------------------------------------------ trending */
+.plat { position: relative; }
+.plat-hot {
+  position: absolute; top: 7px; right: 7px; display: grid; place-items: center;
+  width: 18px; height: 18px; border-radius: 999px;
+  background: #ff6b35; color: #0a1424;
+}
+.plat-hot svg { fill: currentColor; stroke: none; }
+
+.rank {
+  flex: 0 0 26px; width: 26px; height: 26px; border-radius: 9px;
+  display: grid; place-items: center; font-size: .78rem; font-weight: 800;
+  color: var(--brand); background: rgba(62,224,123,.12); font-variant-numeric: tabular-nums;
+}
+.svc:nth-child(1) .rank { background: #ff6b35; color: #0a1424; }
+.svc:nth-child(2) .rank { background: rgba(255,107,53,.55); color: #0a1424; }
+.svc:nth-child(3) .rank { background: rgba(255,107,53,.3); color: #ffd9c7; }
+
+.tchips { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 14px; }
+.tchip {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 7px 11px; border-radius: 999px; text-decoration: none;
+  background: var(--surface-2); border: 1px solid var(--line);
+  font-size: .8rem; font-weight: 700;
+}
+.tchip svg { fill: currentColor; stroke: none; opacity: .85; }
+.tchip:hover { border-color: #28405f; }

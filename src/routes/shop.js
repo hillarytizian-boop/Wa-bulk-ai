@@ -117,6 +117,112 @@ router.get(
   })
 );
 
+// Trending: what customers are actually buying, plus momentum per platform.
+//
+// Honest signals only - paid orders in the last 30 days (weighted x3) and how often a
+// service has been starred. A brand-new panel has neither, so the list is topped up with
+// the cheapest service on each platform rather than showing an empty screen.
+router.get(
+  '/trending',
+  wrap(async (req, res) => {
+    let c;
+    try {
+      c = await catalog.load();
+    } catch (err) {
+      console.error('[trending] catalog unavailable:', err.message);
+      throw new HttpError(503, 'Services are temporarily unavailable. Please try again shortly.');
+    }
+    const settings = pricing.getSettings();
+    const days = 30;
+    const since = Math.floor(Date.now() / 1000) - days * 86400;
+
+    const score = new Map();
+    const orderCount = new Map();
+    const add = (id, weight) => {
+      const key = Number(id);
+      if (!Number.isInteger(key) || key <= 0) return;
+      score.set(key, (score.get(key) || 0) + weight);
+    };
+
+    try {
+      const rows = await db.all(
+        'SELECT service_id, COUNT(*) AS n FROM orders WHERE created_at > $1 GROUP BY service_id ORDER BY 2 DESC LIMIT 50',
+        [since]
+      );
+      for (const r of rows) {
+        const n = Number(r.n) || 0;
+        orderCount.set(Number(r.service_id), n);
+        add(r.service_id, n * 3);
+      }
+    } catch (err) {
+      console.warn('[trending] orders unavailable:', err.message);
+    }
+    try {
+      const rows = await db.all(
+        'SELECT service_id, COUNT(*) AS n FROM favorites GROUP BY service_id ORDER BY 2 DESC LIMIT 50'
+      );
+      for (const r of rows) add(r.service_id, Number(r.n) || 0);
+    } catch (err) {
+      console.warn('[trending] favorites unavailable:', err.message);
+    }
+
+    const byId = new Map(c.list.map((s) => [Number(s.id), s]));
+    const ranked = [...score.entries()]
+      .filter(([id]) => byId.has(id))
+      .sort((a, b) => b[1] - a[1]);
+    const source = ranked.length ? 'activity' : 'popular';
+
+    const picks = ranked.slice(0, 12).map(([id, sc]) => ({ service: byId.get(id), score: sc, real: true }));
+
+    if (picks.length < 12) {
+      // Top up with the cheapest offering on each platform, biggest platforms first.
+      const taken = new Set(picks.map((p) => Number(p.service.id)));
+      const cheapest = new Map();
+      for (const s of c.list) {
+        if (!s.rate || s.rate <= 0) continue;
+        const key = platforms.platformOf(s.category).key;
+        const prev = cheapest.get(key);
+        if (!prev || s.rate < prev.rate) cheapest.set(key, s);
+      }
+      const order = platforms.platformList(c.list).map((p) => p.key);
+      for (const key of order) {
+        if (picks.length >= 12) break;
+        const s = cheapest.get(key);
+        if (!s || taken.has(Number(s.id))) continue;
+        taken.add(Number(s.id));
+        picks.push({ service: s, score: orderCount.get(Number(s.id)) || 0, real: false });
+      }
+    }
+
+    // Platform momentum: aggregate the same score per platform, best three win a "hot" badge.
+    const perPlatform = new Map();
+    for (const [id, sc] of ranked) {
+      const s = byId.get(id);
+      if (!s) continue;
+      const p = platforms.platformOf(s.category);
+      if (!perPlatform.has(p.key)) perPlatform.set(p.key, { key: p.key, name: p.name, color: p.color, score: 0 });
+      perPlatform.get(p.key).score += sc;
+    }
+    const hot = [...perPlatform.values()].sort((a, b) => b.score - a.score).slice(0, 3);
+
+    res.set('Cache-Control', 'public, max-age=60');
+    res.json({
+      window_days: days,
+      source,
+      platforms: hot,
+      services: picks.map(({ service, score: sc }) => {
+        const p = platforms.platformOf(service.category);
+        return {
+          ...presentService(service, settings),
+          platform: { key: p.key, name: p.name, color: p.color },
+          orders_30d: orderCount.get(Number(service.id)) || 0,
+          score: sc,
+        };
+      }),
+    });
+  })
+);
+
 router.get(
   '/services/:id',
   wrap(async (req, res) => {
