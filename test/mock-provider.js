@@ -102,19 +102,39 @@ function createMock() {
     }
   }
 
+  // PayHero stand-in: POST /api/v2/payments + GET /api/v2/transaction-status
   function handleMpesa(req, res, url, p) {
-    if (url.startsWith('/oauth/v1/generate')) return json(res, 200, { access_token: 'mock-token', expires_in: '3599' });
-    if (!String(req.headers.authorization || '').startsWith('Bearer mock-token')) return json(res, 401, { error: 'bad token' });
-    if (url === '/mpesa/stkpush/v1/processrequest') {
-      const id = `ws_CO_${state.nextCheckout++}`;
-      state.stkPushes.push({ id, ...p });
-      return json(res, 200, { MerchantRequestID: `m_${id}`, CheckoutRequestID: id, ResponseCode: '0', ResponseDescription: 'Success', CustomerMessage: 'Success' });
+    if (!String(req.headers.authorization || '').startsWith('Basic ')) return json(res, 401, { status: 401, success: false, message: 'Unable to perform request' });
+
+    if (url === '/api/v2/payments') {
+      if (!p.channel_id || !p.phone_number || !p.amount) return json(res, 401, { status: 401, success: false, message: 'Invalid payment request' });
+      const n = state.nextCheckout++;
+      const reference = `REF${n}`;
+      const checkoutRequestId = `ws_CO_${n}`;
+      state.stkPushes.push({ id: checkoutRequestId, reference, ...p });
+      return json(res, 201, { success: true, status: 'QUEUED', reference, CheckoutRequestID: checkoutRequestId });
     }
-    if (url === '/mpesa/stkpushquery/v1/query') {
-      const r = state.mpesaResult[p.CheckoutRequestID];
-      if (r === undefined) return json(res, 500, { errorCode: '500.001.1001', errorMessage: 'The transaction is being processed' });
-      return json(res, 200, { ResponseCode: '0', ResultCode: r, ResultDesc: r === '0' ? 'The service request is processed successfully.' : 'Request cancelled by user' });
+
+    if (url.startsWith('/api/v2/transaction-status')) {
+      const q = new URL(url, 'http://x').searchParams.get('reference') || '';
+      const r = state.mpesaResult[q];
+      if (r === undefined) return json(res, 200, { status: 'QUEUED', success: false, reference: q });
+      return json(res, 200, {
+        status: r === '0' ? 'SUCCESS' : 'FAILED',
+        success: r === '0',
+        reference: q,
+        provider_reference: r === '0' ? 'QWE123' : '',
+      });
     }
+
+    if (url === '/api/v2/wallets') {
+      return json(res, 200, { available_balance: 0, currency: 'KES', wallet_status: 'ACTIVE' });
+    }
+
+    if (url === '/api/v2/payment_channels') {
+      return json(res, 200, { payment_channels: [{ id: 133, channel_type: 'till', short_code: '000000', is_active: true }] });
+    }
+
     return json(res, 404, { error: 'not found' });
   }
 

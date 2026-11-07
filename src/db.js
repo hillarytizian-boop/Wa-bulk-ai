@@ -84,12 +84,15 @@ const SCHEMA = [
       ['credited_cents', 'bigint', { notNull: true }],
       ['checkout_request_id', 'text', { notNull: true, unique: true }],
       ['merchant_request_id', 'text'],
+      // PayHero: their `reference` (what we poll) and our `external_reference` (what they echo back)
+      ['provider_ref', 'text'],
+      ['external_ref', 'text'],
       ['status', 'text', { notNull: true }],
       ['receipt', 'text'],
       ['created_at', 'int', { notNull: true }],
       ['updated_at', 'int', { notNull: true }],
     ],
-    indexes: [['idx_topups_status', 'status']],
+    indexes: [['idx_topups_status', 'status'], ['idx_topups_external', 'external_ref'], ['idx_topups_provider', 'provider_ref']],
   },
   {
     name: 'settings',

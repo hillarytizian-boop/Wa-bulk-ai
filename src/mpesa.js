@@ -1,53 +1,17 @@
-// M-Pesa (Safaricom Daraja) STK Push wallet top-ups.
+// M-Pesa wallet top-ups, collected through PayHero (https://docs.payhero.co.ke).
+//
+// Flow: the panel asks PayHero to send an STK prompt, stores a `topups` row, and only credits the
+// wallet after the payment is confirmed - either by PayHero's callback (which triggers a verified
+// status check) or by the reconciler in src/jobs.js when a callback never arrives.
+//
 // Money is credited in KES cents: amount_kes * 100. No FX conversion happens here.
 const crypto = require('crypto');
 const db = require('./db');
 const config = require('./config');
 const { HttpError } = require('./errors');
 
-const m = config.mpesa;
+const ph = config.payhero;
 const now = () => Math.floor(Date.now() / 1000);
-
-let tokenCache = { token: null, exp: 0 };
-
-async function getToken() {
-  if (tokenCache.token && Date.now() < tokenCache.exp) return tokenCache.token;
-  const auth = Buffer.from(`${m.consumerKey}:${m.consumerSecret}`).toString('base64');
-  const res = await fetch(`${m.baseUrl}/oauth/v1/generate?grant_type=client_credentials`, {
-    headers: { Authorization: `Basic ${auth}` },
-    signal: AbortSignal.timeout(20000),
-  });
-  if (!res.ok) throw new Error(`Daraja auth failed (HTTP ${res.status})`);
-  const data = await res.json();
-  tokenCache = { token: data.access_token, exp: Date.now() + (Number(data.expires_in || 3599) - 60) * 1000 };
-  return tokenCache.token;
-}
-
-async function post(path, body) {
-  const token = await getToken();
-  const res = await fetch(`${m.baseUrl}${path}`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(30000),
-  });
-  let data = null;
-  try {
-    data = await res.json();
-  } catch {
-    /* non-JSON error body */
-  }
-  return { ok: res.ok, status: res.status, data };
-}
-
-// Daraja timestamps are Nairobi time (UTC+3): YYYYMMDDHHmmss
-function timestamp() {
-  const d = new Date(Date.now() + 3 * 3600 * 1000);
-  const p = (n) => String(n).padStart(2, '0');
-  return `${d.getUTCFullYear()}${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}${p(d.getUTCHours())}${p(d.getUTCMinutes())}${p(d.getUTCSeconds())}`;
-}
-
-const password = (ts) => Buffer.from(`${m.shortcode}${m.passkey}${ts}`).toString('base64');
 
 /** Normalize Kenyan numbers (07xx, 01xx, +2547xx, 2547xx) to 2547XXXXXXXX / 2541XXXXXXXX. */
 function normalizePhone(input) {
@@ -59,46 +23,85 @@ function normalizePhone(input) {
   return p;
 }
 
+/** One HTTP call to PayHero, with Basic auth and a hard timeout. */
+async function call(path, { method = 'GET', body } = {}) {
+  const res = await fetch(`${ph.baseUrl}${path}`, {
+    method,
+    headers: {
+      Authorization: `Basic ${ph.basicAuth}`,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: body ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(30000),
+  });
+  let data = null;
+  try {
+    data = await res.json();
+  } catch {
+    /* non-JSON body */
+  }
+  return { ok: res.ok, status: res.status, data };
+}
+
+/** Callback path secret: unguessable, derived from the app secret so it survives restarts. */
 function callbackSecret() {
   return crypto.createHmac('sha256', config.jwtSecret).update('mpesa-callback').digest('hex').slice(0, 32);
 }
 
 const callbackUrl = () => `${config.publicUrl}/api/wallet/mpesa/callback/${callbackSecret()}`;
+const callbackPath = () => `/api/wallet/mpesa/callback/${callbackSecret()}`;
 
-async function stkPush({ phone, amountKes, reference }) {
-  const ts = timestamp();
-  const { ok, data } = await post('/mpesa/stkpush/v1/processrequest', {
-    BusinessShortCode: m.shortcode,
-    Password: password(ts),
-    Timestamp: ts,
-    TransactionType: m.txnType,
-    Amount: amountKes,
-    PartyA: phone,
-    PartyB: m.partyB,
-    PhoneNumber: phone,
-    CallBackURL: callbackUrl(),
-    AccountReference: String(reference).slice(0, 12),
-    TransactionDesc: 'Wallet top-up',
+/**
+ * Ask PayHero to send the STK prompt.
+ * Returns the two references we need later: PayHero's own `reference` (used to poll the status)
+ * and the M-Pesa `CheckoutRequestID` (what their callback reports back).
+ */
+async function stkPush({ phone, amountKes, externalRef }) {
+  const amount = Math.round(Number(amountKes));
+  if (!Number.isFinite(amount) || amount < 1) throw new HttpError(400, 'Enter a whole KES amount');
+  if (!ph.channelId) throw new HttpError(503, 'Payments are not configured (no PayHero channel id).');
+
+  const { ok, data } = await call('/api/v2/payments', {
+    method: 'POST',
+    body: {
+      amount,
+      phone_number: phone,
+      channel_id: ph.channelId,
+      provider: 'm-pesa',
+      external_reference: String(externalRef).slice(0, 60),
+      callback_url: callbackUrl(),
+    },
   });
-  if (!ok || !data || String(data.ResponseCode) !== '0') {
-    console.warn('[mpesa] STK push rejected:', JSON.stringify(data));
+
+  if (!ok || !data || data.success === false || !(data.reference || data.CheckoutRequestID)) {
+    console.warn('[payhero] STK push rejected:', JSON.stringify(data));
     throw new HttpError(502, 'Could not start the M-Pesa prompt. Please try again.');
   }
-  return { checkoutRequestId: data.CheckoutRequestID, merchantRequestId: data.MerchantRequestID };
+
+  const providerRef = data.reference ? String(data.reference) : null;
+  // PayHero normally returns a CheckoutRequestID; if it does not, their reference is unique too.
+  const checkoutRequestId = data.CheckoutRequestID ? String(data.CheckoutRequestID) : providerRef;
+  return { checkoutRequestId, providerRef };
 }
 
-/** Ask Daraja what happened. Returns 'paid' | 'failed' | 'pending'. */
-async function queryStatus(checkoutRequestId) {
-  const ts = timestamp();
-  const { ok, data } = await post('/mpesa/stkpushquery/v1/query', {
-    BusinessShortCode: m.shortcode,
-    Password: password(ts),
-    Timestamp: ts,
-    CheckoutRequestID: checkoutRequestId,
-  });
-  // While the customer is still entering the PIN, Daraja replies with an error body and no ResultCode.
-  if (!ok || !data || data.ResultCode === undefined) return 'pending';
-  return String(data.ResultCode) === '0' ? 'paid' : 'failed';
+/** Ask PayHero what happened to a payment. Returns 'paid' | 'failed' | 'pending'. */
+async function queryStatus({ providerRef, checkoutRequestId }) {
+  const reference = providerRef || checkoutRequestId;
+  if (!reference) return 'pending';
+  const { ok, data } = await call(`/api/v2/transaction-status?reference=${encodeURIComponent(reference)}`);
+  if (!ok || !data) return 'pending';
+  const status = String(data.status || '').toUpperCase();
+  if (status === 'SUCCESS') return 'paid';
+  if (status === 'FAILED') return 'failed';
+  return 'pending'; // QUEUED
+}
+
+/** His wallet balance at PayHero (service wallet). Used by the admin console. */
+async function providerBalance() {
+  const { ok, data } = await call('/api/v2/wallets');
+  if (!ok || !data) throw new Error('PayHero wallet lookup failed');
+  return { balance: Number(data.available_balance || 0), currency: data.currency || 'KES' };
 }
 
 /** Credit a paid top-up exactly once (guarded by the row lock + the topup status). */
@@ -124,16 +127,16 @@ async function credit(topupId, receipt) {
   });
 }
 
-/** Confirm one pending top-up with Daraja's query API, then credit it once. */
+/** Confirm one pending top-up with PayHero's status API, then credit it once. */
 async function reconcileTopup(topupId, receipt) {
   const t = await db.one('SELECT * FROM topups WHERE id = $1', [topupId]);
   if (!t || t.status !== 'pending') return t && t.status;
 
   let result;
   try {
-    result = await queryStatus(t.checkout_request_id);
+    result = await queryStatus({ providerRef: t.provider_ref, checkoutRequestId: t.checkout_request_id });
   } catch (err) {
-    console.warn(`[mpesa] query failed for topup ${topupId}: ${err.message}`);
+    console.warn(`[payhero] status check failed for topup ${topupId}: ${err.message}`);
     result = 'pending';
   }
 
@@ -141,6 +144,7 @@ async function reconcileTopup(topupId, receipt) {
     await credit(topupId, receipt);
     return 'paid';
   }
+  // Give the customer 30 minutes to finish the prompt before writing the attempt off.
   if (result === 'failed' || now() - Number(t.created_at) > 30 * 60) {
     await db.run("UPDATE topups SET status = 'failed', updated_at = $1 WHERE id = $2 AND status = 'pending'", [now(), topupId]);
     return 'failed';
@@ -158,21 +162,50 @@ async function reconcilePending(limit = 20) {
   return rows.length;
 }
 
-/** Pull the receipt number out of a Daraja callback body (best effort, never trusted for crediting). */
-function receiptFromCallback(cb) {
-  const items = cb && cb.CallbackMetadata && cb.CallbackMetadata.Item;
-  if (!Array.isArray(items)) return null;
-  const hit = items.find((i) => i.Name === 'MpesaReceiptNumber');
-  return hit && hit.Value ? String(hit.Value).slice(0, 40) : null;
+/**
+ * Read either callback shape and pull out the identifiers.
+ * PayHero: { status: true, response: { CheckoutRequestID, ExternalReference, MpesaReceiptNumber, ... } }
+ * Daraja:  { Body: { stkCallback: { CheckoutRequestID, CallbackMetadata: { Item: [...] } } } }
+ * The receipt is informational only - nothing is credited from this body.
+ */
+function parseCallback(body) {
+  const b = body || {};
+  if (b.response && typeof b.response === 'object') {
+    const r = b.response;
+    return {
+      provider: 'payhero',
+      checkoutRequestId: r.CheckoutRequestID ? String(r.CheckoutRequestID) : null,
+      externalRef: r.ExternalReference ? String(r.ExternalReference) : null,
+      receipt: r.MpesaReceiptNumber ? String(r.MpesaReceiptNumber).slice(0, 40) : null,
+      succeeded: String(r.Status || '').toLowerCase() === 'success' || Number(r.ResultCode) === 0,
+    };
+  }
+  const cb = b.Body && b.Body.stkCallback;
+  if (cb) {
+    const items = cb.CallbackMetadata && cb.CallbackMetadata.Item;
+    const hit = Array.isArray(items) ? items.find((i) => i.Name === 'MpesaReceiptNumber') : null;
+    return {
+      provider: 'daraja',
+      checkoutRequestId: cb.CheckoutRequestID ? String(cb.CheckoutRequestID) : null,
+      externalRef: null,
+      receipt: hit && hit.Value ? String(hit.Value).slice(0, 40) : null,
+      succeeded: Number(cb.ResultCode) === 0,
+    };
+  }
+  return { provider: null, checkoutRequestId: null, externalRef: null, receipt: null, succeeded: false };
 }
 
 module.exports = {
-  enabled: m.enabled,
+  enabled: ph.enabled,
+  provider: 'payhero',
   normalizePhone,
   callbackSecret,
+  callbackPath,
+  callbackUrl,
   stkPush,
   queryStatus,
+  providerBalance,
   reconcileTopup,
   reconcilePending,
-  receiptFromCallback,
+  parseCallback,
 };

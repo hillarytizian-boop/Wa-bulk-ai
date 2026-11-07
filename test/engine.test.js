@@ -32,10 +32,10 @@ async function test(name, fn) {
     DEFAULT_MARKUP: '0.3',
     KES_PER_USD: '100',
     FEE_KES: '50',
-    MPESA_BASE_URL: `http://127.0.0.1:${mock.port}`,
-    MPESA_CONSUMER_KEY: 'ck',
-    MPESA_CONSUMER_SECRET: 'cs',
-    MPESA_PASSKEY: 'pk',
+    // PayHero is the M-Pesa collector; the mock speaks its /api/v2 shape.
+    PAYHERO_BASE_URL: `http://127.0.0.1:${mock.port}`,
+    PAYHERO_BASIC_AUTH: 'dGVzdDp0ZXN0',
+    PAYHERO_CHANNEL_ID: '133',
     JWT_SECRET: 'test-secret',
   });
 
@@ -221,7 +221,7 @@ async function test(name, fn) {
     assert.equal(balance(), before - 16700);
   });
 
-  // ---------------------------------------------------------------- M-Pesa
+  // ---------------------------------------------------------------- M-Pesa (PayHero)
   await test('M-Pesa: phone normalization', () => {
     assert.equal(mpesa.normalizePhone('0712 345 678'), '254712345678');
     assert.equal(mpesa.normalizePhone('+254 112345678'), '254112345678');
@@ -230,25 +230,26 @@ async function test(name, fn) {
   });
 
   async function createTopup(amountKes) {
-    const { checkoutRequestId } = await mpesa.stkPush({ phone: '254712345678', amountKes, reference: 'W1' });
+    const externalRef = `W${uid}-${Date.now()}`;
+    const { checkoutRequestId, providerRef } = await mpesa.stkPush({ phone: '254712345678', amountKes, externalRef });
     const t = now();
     const id = Number(
       raw
         .prepare(
-          `INSERT INTO topups (user_id, phone, amount_kes, credited_cents, checkout_request_id, status, created_at, updated_at)
-           VALUES (?,?,?,?,?,'pending',?,?)`
+          `INSERT INTO topups (user_id, phone, amount_kes, credited_cents, checkout_request_id, provider_ref, external_ref, status, created_at, updated_at)
+           VALUES (?,?,?,?,?,?,?,'pending',?,?)`
         )
-        .run(uid, '254712345678', amountKes, amountKes * 100, checkoutRequestId, t, t).lastInsertRowid
+        .run(uid, '254712345678', amountKes, amountKes * 100, checkoutRequestId, providerRef, externalRef, t, t).lastInsertRowid
     );
-    return { id, checkoutRequestId };
+    return { id, checkoutRequestId, providerRef };
   }
 
   await test('M-Pesa: pending -> paid credits KES exactly once, even when reconciled concurrently', async () => {
-    const { id, checkoutRequestId } = await createTopup(500);
+    const { id, providerRef } = await createTopup(500);
     const before = balance();
     assert.equal(await mpesa.reconcileTopup(id), 'pending'); // customer has not entered the PIN yet
     assert.equal(balance(), before);
-    mock.state.mpesaResult[checkoutRequestId] = '0';
+    mock.state.mpesaResult[providerRef] = '0';
     const r = await Promise.all([mpesa.reconcileTopup(id, 'QWE123'), mpesa.reconcileTopup(id, 'QWE123')]);
     assert.ok(r.includes('paid'));
     assert.equal(balance(), before + 50000); // KES 500 credited once
@@ -257,8 +258,8 @@ async function test(name, fn) {
   });
 
   await test('M-Pesa: customer cancels the prompt -> topup fails, nothing credited', async () => {
-    const { id, checkoutRequestId } = await createTopup(200);
-    mock.state.mpesaResult[checkoutRequestId] = '1032';
+    const { id, providerRef } = await createTopup(200);
+    mock.state.mpesaResult[providerRef] = '1032';
     const before = balance();
     assert.equal(await mpesa.reconcileTopup(id), 'failed');
     assert.equal(balance(), before);

@@ -68,17 +68,22 @@ module.exports = {
     redirectUri: process.env.GOOGLE_REDIRECT_URI || `${(process.env.PUBLIC_URL || `http://localhost:${num(process.env.PORT, 3000)}`).replace(/\/$/, '')}/api/auth/google/callback`,
   },
 
-  mpesa: {
-    enabled: Boolean(process.env.MPESA_CONSUMER_KEY && process.env.MPESA_CONSUMER_SECRET && process.env.MPESA_PASSKEY),
-    env: mpesaEnv,
-    baseUrl:
-      process.env.MPESA_BASE_URL ||
-      (mpesaEnv === 'production' ? 'https://api.safaricom.co.ke' : 'https://sandbox.safaricom.co.ke'),
-    consumerKey: process.env.MPESA_CONSUMER_KEY || '',
-    consumerSecret: process.env.MPESA_CONSUMER_SECRET || '',
-    shortcode: process.env.MPESA_SHORTCODE || '174379',
-    partyB: process.env.MPESA_PARTYB || process.env.MPESA_SHORTCODE || '174379',
-    passkey: process.env.MPESA_PASSKEY || '',
-    txnType: process.env.MPESA_TXN_TYPE || 'CustomerPayBillOnline',
-  },
+  // M-Pesa collections run through PayHero (Basic auth API key + one payment channel).
+  // MPESA_* is read as a fallback so an older deployment keeps booting.
+  payhero: (() => {
+    const username = process.env.PAYHERO_API_USERNAME || '';
+    const password = process.env.PAYHERO_API_PASSWORD || '';
+    const basicAuth =
+      process.env.PAYHERO_BASIC_AUTH ||
+      (username && password ? Buffer.from(`${username}:${password}`).toString('base64') : '');
+    const channelId = num(process.env.PAYHERO_CHANNEL_ID, 0);
+    return {
+      enabled: Boolean(basicAuth && channelId),
+      baseUrl: (process.env.PAYHERO_BASE_URL || 'https://backend.payhero.co.ke').replace(/\/$/, ''),
+      basicAuth,
+      channelId,
+      accountId: num(process.env.PAYHERO_ACCOUNT_ID, 0),
+      provider: 'm-pesa',
+    };
+  })(),
 };

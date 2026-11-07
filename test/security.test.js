@@ -126,7 +126,7 @@ async function test(name, fn) {
     const blob = JSON.stringify(meta.data) + JSON.stringify(services.data);
     assert.ok(!blob.includes(process.env.SMM_API_KEY), 'provider key must never be returned');
     assert.ok(!/"rate"\s*:/.test(blob), 'no provider rate field');
-    assert.ok(!blob.includes('kesPerUsd'), 'no internal FX setting');
+    assert.ok(!blob.includes('provider_cost'), 'no provider cost field');
   });
 
   await test('cross-site POSTs are blocked (CSRF origin check)', async () => {
@@ -241,16 +241,28 @@ async function test(name, fn) {
 
   await test('admin actions are written to the audit log', async () => {
     const admin = await loginAs(ADMIN_EMAIL, ADMIN_PASSWORD);
-    const target = raw.prepare("INSERT INTO users (email, password_hash, created_at) VALUES ('audit@panel.test','x',?) RETURNING id").get(1);
-    const credit = await call(`/api/admin/users/${target.id}/credit`, {
+    const save = await call('/api/admin/settings', {
       method: 'POST',
-      body: { amount_kes: 250, note: 'audit test' },
+      body: { markup: 0.3 },
       cookie: admin.session,
     });
-    assert.equal(credit.status, 200);
+    assert.equal(save.status, 200);
     const log = await call('/api/admin/audit', { cookie: admin.session });
     assert.equal(log.status, 200);
-    assert.ok(log.data.entries.some((e) => e.action === 'wallet.adjust' && e.target === `user:${target.id}`));
+    assert.ok(log.data.entries.some((e) => e.action === 'pricing.update'));
+  });
+
+  await test('admins can no longer move money into a wallet', async () => {
+    const admin = await loginAs(ADMIN_EMAIL, ADMIN_PASSWORD);
+    const target = raw.prepare("INSERT INTO users (email, password_hash, created_at) VALUES ('noCredit@panel.test','x',?) RETURNING id").get(1);
+    const before = raw.prepare('SELECT balance_cents FROM users WHERE id = ?').get(target.id).balance_cents;
+    const credit = await call(`/api/admin/users/${target.id}/credit`, {
+      method: 'POST',
+      body: { amount_kes: 250, note: 'should not work' },
+      cookie: admin.session,
+    });
+    assert.equal(credit.status, 404);
+    assert.equal(raw.prepare('SELECT balance_cents FROM users WHERE id = ?').get(target.id).balance_cents, before);
   });
 
   await test('the M-Pesa callback ignores requests with a wrong secret', async () => {
