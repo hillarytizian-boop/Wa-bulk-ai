@@ -2,23 +2,48 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#0b0f14" />
-    <title>SMM Panel</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#050d18" />
+    <title>HilaPanel</title>
     <meta name="description" content="Buy followers, likes and views in Kenya. Pay with M-Pesa." />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <header class="topbar">
-      <div class="wrap bar">
-        <a class="brand" href="#/" id="brand">SMM Panel</a>
-        <nav id="nav" class="nav" aria-label="Main"></nav>
-        <div class="right" id="right"></div>
-      </div>
-    </header>
-    <main class="wrap" id="view" aria-live="polite"></main>
-    <footer class="wrap foot"><span id="foot"></span></footer>
-    <div id="toasts" class="toasts" role="status"></div>
+    <div class="app">
+      <header class="apbar">
+        <div class="toprow">
+          <button class="icon-btn" id="closeBtn" aria-label="Close">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>
+          </button>
+          <div class="title-block">
+            <div class="app-title" id="appTitle">Dashboard | HilaPanel</div>
+            <div class="app-sub" id="appSub">hilapanel.vercel.app</div>
+          </div>
+          <button class="icon-btn" id="menuBtn" aria-label="Menu" aria-expanded="false">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><circle cx="12" cy="5" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="12" cy="19" r="1.8"/></svg>
+          </button>
+        </div>
+
+        <div class="balance-card" id="balances"></div>
+
+        <section class="update" id="updateBanner" hidden>
+          <h3>An app update is ready</h3>
+          <p>Get the latest version when you are ready. Your open tabs will refresh.</p>
+          <div class="update-actions">
+            <button class="btn" id="updateNow">Update now</button>
+            <button class="btn ghost" id="updateLater">Later</button>
+          </div>
+        </section>
+
+        <div class="tabs" id="tabs" hidden></div>
+        <nav class="menu" id="nav" aria-label="Main menu" hidden></nav>
+      </header>
+
+      <main class="content" id="view" aria-live="polite"></main>
+
+      <nav class="tabbar" id="tabbar" aria-label="Primary"></nav>
+      <div class="toasts" id="toasts" role="status"></div>
+    </div>
     <script src="/main.js"></script>
   </body>
 </html>

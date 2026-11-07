@@ -21,6 +21,7 @@ const SCHEMA = [
       ['balance_cents', 'bigint', { notNull: true, default: 0 }],
       ['is_admin', 'flag', { notNull: true, default: 0 }],
       ['token_version', 'int', { notNull: true, default: 0 }],
+      ['google_sub', 'text', { unique: true }],
       ['created_at', 'int', { notNull: true }],
     ],
   },

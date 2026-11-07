@@ -25,8 +25,13 @@ router.get('/meta', (_req, res) => {
     siteName: config.siteName,
     currency: 'KES',
     mpesaEnabled: mpesa.enabled,
+    googleEnabled: config.google.enabled,
     minTopupKes: config.minTopupKes,
     maxTopupKes: config.maxTopupKes,
+    // display-only FX rate so the panel can show prices in USD as well as KES
+    kesPerUsd: config.pricing.kesPerUsd,
+    // changes on every deploy; the SPA polls /meta to offer "an app update is ready"
+    build: process.env.VERCEL_GIT_COMMIT_SHA || process.env.VERCEL_DEPLOYMENT_ID || 'dev',
     fields: FIELD_META,
   });
 });

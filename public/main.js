@@ -1,18 +1,25 @@
-/* SMM panel SPA (no build step). All texts - including provider-supplied service names and
-   descriptions - are inserted with textContent / createTextNode, never innerHTML. */
+/* HilaPanel SPA (no build step).
+   Layout cloned from the smm.africa panel: top bar with X / "Page | Brand" / kebab, a balance
+   pill with a currency selector, an app-update banner, segmented tabs, transparent filter chips,
+   order cards and a floating five-slot bottom bar (Home · Orders · New Order · Wallet · More).
+   All dynamic text — including provider-supplied service names — goes in via textContent. */
 (() => {
   'use strict';
 
-  const state = { meta: null, user: null, services: null, timer: null, catalog: null };
+  const state = {
+    meta: null, user: null, orders: null, timer: null, route: '', build: null,
+    currency: 'KES', updateDismissed: false,
+  };
 
-  // ------------------------------------------------------------------ helpers
   const view = document.getElementById('view');
 
+  // ------------------------------------------------------------------ helpers
   function h(tag, props, ...kids) {
     const el = document.createElement(tag);
     for (const [k, v] of Object.entries(props || {})) {
       if (v == null || v === false) continue;
       if (k === 'class') el.className = v;
+      else if (k === 'style') el.setAttribute('style', v);
       else if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2), v);
       else if (k === 'value') el.value = v;
       else el.setAttribute(k, v === true ? '' : v);
@@ -28,6 +35,40 @@
     el.replaceChildren(...kids.flat(Infinity).filter((k) => k != null && k !== false));
     return el;
   };
+
+  /** Inline SVG built from a constant string (never user input). */
+  function svg(markup, size = 22, opts = {}) {
+    const el = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    el.setAttribute('viewBox', '0 0 24 24');
+    el.setAttribute('width', size);
+    el.setAttribute('height', size);
+    el.setAttribute('fill', opts.fill || 'none');
+    el.setAttribute('stroke', opts.stroke || 'currentColor');
+    el.setAttribute('stroke-width', opts.width || '1.9');
+    el.setAttribute('stroke-linecap', 'round');
+    el.setAttribute('stroke-linejoin', 'round');
+    el.innerHTML = markup;
+    return el;
+  }
+
+  const ICO = {
+    home: '<path d="M3.4 10.4 12 3.4l8.6 7"/><path d="M5.6 9.6V20.4h12.8V9.6"/><path d="M9.9 20.4v-5.6h4.2v5.6"/>',
+    orders: '<rect x="4.6" y="3.6" width="14.8" height="16.8" rx="2.6"/><path d="M8.6 9.2h6.8M8.6 12.8h6.8M8.6 16.4h4"/>',
+    plus: '<path d="M12 5.4v13.2M5.4 12h13.2"/>',
+    wallet: '<rect x="3.3" y="6.6" width="17.4" height="12.4" rx="3.4"/><path d="M3.3 10.6h17.4"/>',
+    more: '<path d="M4 7.2h16M4 12h16M4 16.8h10"/>',
+    filter: '<path d="M4 7h16M7 12h10M10 17h4"/>',
+    download: '<path d="M12 4.6v9.6M8.2 10.6 12 14.4l3.8-3.8M5.4 19h13.2"/>',
+  };
+
+  const GOOGLE_G = `<svg viewBox="0 0 48 48" width="18" height="18" aria-hidden="true">
+    <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+    <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+    <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
+    <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+  </svg>`;
+
+  const TRANSLATE_ICO = '<path d="M3.5 6.4h8.4M7.7 4.6v1.8M9.9 6.4c0 3.6-2.6 6.6-6.1 7.6"/><path d="M5.2 9.4c1.2 2.2 3 3.7 5.2 4.5"/><path d="M12.4 20.2 16.6 10l4.2 10.2M14 16.6h5.2"/>';
 
   async function api(path, { method = 'GET', body } = {}) {
     const res = await fetch(`/api${path}`, {
@@ -45,66 +86,194 @@
   function toast(msg, isError) {
     const t = h('div', { class: `toast${isError ? ' error' : ''}` }, msg);
     document.getElementById('toasts').append(t);
-    setTimeout(() => t.remove(), isError ? 6500 : 3500);
+    setTimeout(() => t.remove(), isError ? 6500 : 3800);
   }
 
-  /** Integer KES cents -> "KSh 1,234.50" (mirrors src/money.js). */
+  /** KES amount from integer cents. */
   function kes(cents) {
     const n = Math.round(Number(cents) || 0);
-    const neg = n < 0;
     const abs = Math.abs(n);
     const whole = Math.floor(abs / 100);
     const rem = abs % 100;
-    return `${neg ? '-' : ''}KSh ${whole.toLocaleString('en-KE')}${rem ? `.${String(rem).padStart(2, '0')}` : ''}`;
+    return `${n < 0 ? '-' : ''}KSh ${whole.toLocaleString('en-KE')}${rem ? `.${String(rem).padStart(2, '0')}` : ''}`;
   }
 
-  const per1000 = (cents) => `${kes(cents)} / 1000`;
+  /** Amount in the display currency the user picked in the header pill. */
+  function amt(cents) {
+    if (state.currency === 'USD') {
+      const rate = (state.meta && state.meta.kesPerUsd) || 129;
+      return `$${((Math.round(Number(cents) || 0) / 100) / rate).toFixed(2)}`;
+    }
+    return kes(cents);
+  }
+
+  const per1000 = (c) => `${amt(c)} / 1000`;
   const fmtDate = (iso) => new Date(iso).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
+  const relDate = (iso) => {
+    const mins = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+    if (mins < 1) return 'just now';
+    if (mins < 60) return `${mins}m ago`;
+    const hrs = Math.round(mins / 60);
+    if (hrs < 24) return `${hrs}h ago`;
+    const days = Math.round(hrs / 24);
+    return days < 30 ? `${days}d ago` : fmtDate(iso);
+  };
   const num = (n) => (n == null ? '-' : Number(n).toLocaleString());
   const badge = (s) => h('span', { class: `badge ${s}` }, String(s).replace(/_/g, ' '));
 
-  const safeLink = (url, max = 36) =>
+  const safeLink = (url, max = 42) =>
     /^https?:\/\//i.test(url)
-      ? h('a', { href: url, target: '_blank', rel: 'noopener noreferrer nofollow' }, url.length > max ? `${url.slice(0, max)}…` : url)
-      : h('span', null, url);
+      ? h('a', { class: 'order-link', href: url, target: '_blank', rel: 'noopener noreferrer nofollow' }, url.length > max ? `${url.slice(0, max)}…` : url)
+      : h('span', { class: 'order-link' }, url);
 
   const stopTimer = () => { if (state.timer) clearInterval(state.timer); state.timer = null; };
+  const stale = () => state.route !== currentRoute().name;
   const requireLogin = () => { if (state.user) return true; location.hash = '#/login'; return false; };
 
+  const GROUPS = {
+    active: ['pending', 'queued', 'processing', 'submitting'],
+    done: ['completed', 'partial'],
+    attention: ['failed', 'canceled', 'refunded', 'needs_review'],
+  };
+  const groupOf = (s) => (GROUPS.active.includes(s) ? 'active' : GROUPS.done.includes(s) ? 'done' : 'attention');
+
+  const PAGE_TITLES = {
+    '': 'Dashboard', orders: 'Orders', order: 'New order', services: 'Services',
+    login: 'Log in', register: 'Create account', wallet: 'Wallet', mass: 'Mass order',
+    drip: 'Drip campaigns', admin: 'Admin',
+  };
+
+  const pageHead = (title, sub, action) => h('div', { class: 'page-head' },
+    h('div', null, h('h1', null, title), sub ? h('p', { class: 'sub' }, sub) : null), action || null);
+  const errBox = (msg) => h('div', { class: 'card err' }, msg);
+  const skeletons = (rows = 3) => h('div', null, Array.from({ length: rows }, (_, i) =>
+    h('div', { class: i ? 'sk w70' : 'sk w55' })));
+  const emptyState = (emoji, title, sub, action) =>
+    h('div', { class: 'card empty' }, h('div', { class: 'big' }, emoji), h('h2', null, title),
+      h('p', { class: 'muted' }, sub), action || null);
+
   // ------------------------------------------------------------------ chrome
+  const menuEl = () => document.getElementById('nav');
+  const closeMenu = () => { menuEl().hidden = true; document.getElementById('menuBtn').setAttribute('aria-expanded', 'false'); };
+  const toggleMenu = () => {
+    const m = menuEl();
+    m.hidden = !m.hidden;
+    document.getElementById('menuBtn').setAttribute('aria-expanded', String(!m.hidden));
+  };
+
+  let popoverEl = null;
+  function closePopover() {
+    if (popoverEl) { popoverEl.remove(); popoverEl = null; }
+  }
+
+  function openCurrencyMenu() {
+    if (popoverEl) return closePopover();
+    const opt = (code, label) => h('button', {
+      class: state.currency === code ? 'on' : '',
+      onclick: () => { state.currency = code; closePopover(); renderChrome(); route(); },
+    }, h('span', null, `${code} — ${label}`), state.currency === code ? '✓' : '');
+    popoverEl = h('div', { class: 'popover' },
+      h('div', { class: 'pop-label' }, 'Display currency'),
+      opt('KES', 'Kenyan Shilling'),
+      opt('USD', `US Dollar (≈${(state.meta && state.meta.kesPerUsd) || 129}/USD)`),
+      h('div', { class: 'sep' }),
+      h('div', { class: 'pop-label' }, 'Language'),
+      h('button', { onclick: () => { closePopover(); toast('English (Kenya) is the only language for now.'); } },
+        h('span', null, 'English (KE)'), '✓'));
+    document.querySelector('.app').append(popoverEl);
+  }
+
   function renderChrome() {
     const route = currentRoute().name;
-    document.title = state.meta ? state.meta.siteName : 'SMM Panel';
-    document.getElementById('brand').textContent = state.meta ? state.meta.siteName : 'SMM Panel';
-    document.getElementById('foot').textContent = `© ${new Date().getFullYear()} ${state.meta ? state.meta.siteName : ''} · Prices in Kenyan Shillings · Powered by M-Pesa`;
+    const site = state.meta ? state.meta.siteName : 'HilaPanel';
+    document.title = `${PAGE_TITLES[route] || 'Dashboard'} | ${site}`;
+    document.getElementById('appTitle').textContent = `${PAGE_TITLES[route] || 'Dashboard'} | ${site}`;
+    document.getElementById('appSub').textContent = location.host;
 
-    const links = [['', 'New order'], ['services', 'Services']];
-    if (state.user) links.push(['orders', 'My orders'], ['wallet', 'Wallet']);
+    // balance strip: brand · [amount + KES v] · translate
+    const amount = state.user ? (state.user.balance_cents / 100).toFixed(2) : '0.00';
+    const chev = svg('<path d="M6 9l6 6 6-6"/>', 14, { width: '2.4' });
+    fill(document.getElementById('balances'),
+      h('span', { class: 'bal-brand' }, site),
+      h('button', {
+        class: 'bal-pill', 'aria-label': 'Wallet balance and currency',
+        onclick: (ev) => { ev.stopPropagation(); openCurrencyMenu(); },
+      },
+        h('span', { class: 'bal-amount' }, amount),
+        state.user
+          ? h('span', {
+              class: 'bal-add', role: 'button', title: 'Add funds',
+              onclick: (ev) => { ev.stopPropagation(); closePopover(); location.hash = '#/wallet'; },
+            }, '+')
+          : h('span', { class: 'bal-add' }, '+'),
+        h('span', { class: 'bal-div' }),
+        h('span', { class: 'bal-cur' }, state.currency, chev.cloneNode(true))),
+      h('button', { class: 'lang-btn', 'aria-label': 'Language and currency', onclick: (ev) => { ev.stopPropagation(); openCurrencyMenu(); } },
+        svg(TRANSLATE_ICO, 21),
+        chev.cloneNode(true)));
+
+    // segmented tabs
+    const tabs = document.getElementById('tabs');
+    const showTabs = ['', 'orders', 'drip', 'mass'].includes(route);
+    tabs.hidden = !showTabs;
+    if (!showTabs) fill(tabs);
+    if (showTabs) {
+      const tab = (hash, label, active) => h('a', { href: hash, class: active ? 'active' : '' }, label);
+      fill(tabs,
+        tab('#/orders', 'Orders', route === 'orders' || route === ''),
+        tab('#/drip', 'Drip campaigns', route === 'drip'),
+        tab('#/mass', 'Mass order', route === 'mass'));
+    }
+
+    // overflow menu
+    const links = [['', 'Dashboard'], ['order', 'New order'], ['services', 'Services'], ['mass', 'Mass order']];
+    if (state.user) links.push(['orders', 'Orders'], ['wallet', 'Wallet']);
     if (state.user && state.user.is_admin) links.push(['admin', 'Admin']);
-    fill(document.getElementById('nav'), ...links.map(([r, label]) => h('a', { href: `#/${r}`, class: route === r ? 'active' : '' }, label)));
+    const kids = links.map(([r, label]) => h('a', { href: `#/${r}`, class: route === r ? 'active' : '' }, label));
+    kids.push(state.user
+      ? h('a', { href: '#', onclick: (ev) => { ev.preventDefault(); closeMenu(); logout(); } }, 'Log out')
+      : h('a', { href: '#/login', onclick: closeMenu }, 'Log in'));
+    fill(menuEl(), ...kids);
 
-    fill(
-      document.getElementById('right'),
-      state.user
-        ? [
-            h('a', { class: 'chip', href: '#/wallet', title: 'Wallet balance' }, kes(state.user.balance_cents)),
-            h('button', { class: 'btn ghost small', onclick: logout }, 'Log out'),
-          ]
-        : [h('a', { class: 'btn small', href: '#/login' }, 'Log in')]
-    );
+    // floating bottom bar
+    const pending = state.orders ? state.orders.filter((o) => groupOf(o.status) === 'active').length : 0;
+    const item = (hash, label, ico, active, opts = {}) => h('a', {
+      href: hash, class: `${active ? 'active' : ''}${opts.fab ? ' fab-item' : ''}`,
+    },
+      opts.fab
+        ? h('span', { class: 'fab' }, svg(ico, 22, { width: '2.3' }))
+        : h('span', { class: 'ico-wrap' }, svg(ico, 22)),
+      h('span', null, label));
+
+    const moreBtn = h('a', {
+      href: '#',
+      class: ['admin', 'services'].includes(route) ? 'active' : '',
+    },
+      h('span', { class: 'ico-wrap' }, svg(ICO.more, 22)),
+      h('span', null, 'More'),
+      pending ? h('span', { class: 'nav-badge' }, pending > 9 ? '9+' : String(pending)) : null);
+    moreBtn.addEventListener('click', (ev) => { ev.preventDefault(); closeMenu(); toggleMenu(); });
+
+    fill(document.getElementById('tabbar'),
+      item('#/', 'Home', ICO.home, route === '' || route === 'order'),
+      item('#/orders', 'Orders', ICO.orders, ['orders', 'drip', 'mass'].includes(route)),
+      item('#/order', 'New Order', ICO.plus, false, { fab: true }),
+      item('#/wallet', 'Wallet', ICO.wallet, route === 'wallet'),
+      moreBtn);
+  }
+
+  function showUpdateBanner() {
+    const el = document.getElementById('updateBanner');
+    if (!state.updateDismissed) el.hidden = false;
   }
 
   async function logout() {
     await api('/auth/logout', { method: 'POST' }).catch(() => {});
     state.user = null;
+    state.orders = null;
     location.hash = '#/';
-    route();
-  }
-
-  async function refreshUser() {
-    const { user } = await api('/auth/me');
-    state.user = user;
     renderChrome();
+    route();
   }
 
   const setBalance = (cents) => {
@@ -112,61 +281,110 @@
     renderChrome();
   };
 
-  const pageHead = (title, sub) => [h('h1', null, title), sub ? h('p', { class: 'sub' }, sub) : null];
-  const errBox = (msg) => h('div', { class: 'card err' }, msg);
+  // ------------------------------------------------------------------ dashboard
+  async function dashboardView() {
+    stopTimer();
+    const name = state.user ? String(state.user.email).split('@')[0] : null;
+    const balanceSlot = h('div', null, h('div', { class: 'sk w55', style: 'height:30px' }));
+    const pill = h('span', { class: 'refresh-pill' }, 'Refreshing…');
+    const recentBox = h('div', null, skeletons());
 
-  // ------------------------------------------------------------------ catalog
-  async function loadServices(params = {}) {
-    const qs = new URLSearchParams(params).toString();
-    return api(`/services${qs ? `?${qs}` : ''}`);
+    fill(view,
+      h('h1', null, 'Dashboard'),
+      h('p', { class: 'sub' }, name ? `Welcome back, ${name}. Here's your panel overview.` : 'Buy followers, likes and views — pay with M-Pesa.'),
+      h('div', { style: 'margin-bottom:16px' },
+        h('a', { class: 'btn', href: state.user ? '#/order' : '#/login' }, state.user ? 'New order' : 'Get started')),
+      h('div', { class: 'row', style: 'justify-content:flex-end;margin-bottom:16px' }, pill),
+
+      h('div', { class: 'card' },
+        h('h2', null, 'Wallet balance'),
+        balanceSlot,
+        h('p', { class: 'muted', style: 'margin:10px 0 12px' }, 'Available to spend on orders.'),
+        h('a', { class: 'btn ghost small', href: '#/wallet' }, 'Add funds →')),
+
+      h('div', { class: 'card' },
+        h('div', { class: 'card-head' }, h('h2', null, 'Orders'), h('a', { class: 'btn ghost small', href: '#/orders' }, 'View all')),
+        recentBox));
+
+    if (!state.user) {
+      fill(balanceSlot, h('div', { class: 'v', style: 'font-size:2rem;font-weight:800' }, kes(0)));
+      pill.textContent = 'Signed out';
+      fill(recentBox, h('p', { class: 'muted' }, 'No orders yet.'));
+      return;
+    }
+
+    try {
+      const [{ user }, { orders }] = await Promise.all([api('/auth/me'), api('/orders')]);
+      if (stale()) return;
+      state.user = user;
+      state.orders = orders;
+      fill(balanceSlot, h('div', { style: 'font-size:2rem;font-weight:800;letter-spacing:-.02em' }, amt(user.balance_cents)));
+      pill.textContent = 'Live';
+      pill.className = 'refresh-pill ok';
+      renderChrome();
+      fill(recentBox, orders.length
+        ? orders.slice(0, 3).map((o) => orderCard(o))
+        : h('p', { class: 'muted' }, 'No orders yet.'));
+    } catch (e) {
+      fill(recentBox, errBox(e.message));
+      pill.textContent = 'Offline';
+      pill.className = 'refresh-pill err';
+    }
   }
 
+  // ------------------------------------------------------------------ catalog
+  const loadServices = (params = {}) => {
+    const qs = new URLSearchParams(params).toString();
+    return api(`/services${qs ? `?${qs}` : ''}`);
+  };
+
+  const serviceRow = (s) => h('div', { class: 'svc' },
+    h('div', { style: 'min-width:0' },
+      h('div', { class: 'name' }, s.name),
+      h('div', { class: 'meta' }, `${s.category} · ${s.flat ? 'per order' : `min ${num(s.min)} – max ${num(s.max)}`}${s.refill ? ' · refill' : ''}`)),
+    h('div', { class: 'svc-side' },
+      h('span', { class: 'price' }, s.flat ? amt(s.rate_cents) : per1000(s.rate_cents)),
+      h('a', { class: 'btn small', href: `#/order?service=${s.id}` }, 'Order')));
+
   async function servicesView(params = {}) {
+    stopTimer();
     const page = Number(params.page) || 1;
     const q = params.q || '';
     const category = params.category || '';
-    fill(view, ...pageHead('Services', 'Every price is in KES and includes the KSh 50 service fee.'), h('p', { class: 'muted' }, 'Loading…'));
+    fill(view, pageHead('Services', 'Every price is in your display currency and includes the service fee.'), h('div', { class: 'card' }, skeletons(4)));
 
     let data;
     try { data = await loadServices({ page, per_page: 20, q, category }); }
-    catch (e) { return fill(view, ...pageHead('Services'), errBox(e.message)); }
+    catch (e) { return fill(view, pageHead('Services'), errBox(e.message)); }
+    if (stale()) return;
 
     const search = h('input', { type: 'search', placeholder: 'Search services…', value: q, autocomplete: 'off' });
     const catSel = h('select', null,
       h('option', { value: '' }, 'All categories'),
       data.categories.map((c) => h('option', { value: c, selected: c === category }, c)));
     const go = () => (location.hash = `#/services?${new URLSearchParams({ q: search.value.trim(), category: catSel.value, page: 1 })}`);
-
-    const rows = data.services.map((s) =>
-      h('div', { class: 'svc' },
-        h('div', { class: 'spread' },
-          h('div', null,
-            h('div', { class: 'name' }, s.name),
-            h('div', { class: 'meta' }, `${s.category} · ${s.flat ? 'per order' : `min ${num(s.min)} – max ${num(s.max)}`}${s.refill ? ' · refill' : ''}${s.cancel ? ' · cancel' : ''}`)),
-          h('div', { class: 'row' },
-            h('span', { class: 'price' }, s.flat ? kes(s.rate_cents) : per1000(s.rate_cents)),
-            h('a', { class: 'btn small', href: `#/?service=${s.id}` }, 'Order')))));
-
-    const pager = h('div', { class: 'pagination' },
-      h('button', { class: 'btn ghost small', disabled: data.pagination.page <= 1, onclick: () => (location.hash = `#/services?${new URLSearchParams({ q, category, page: page - 1 })}`) }, 'Previous'),
-      h('span', { class: 'muted' }, `Page ${data.pagination.page} of ${data.pagination.pages} · ${data.pagination.total} services`),
-      h('button', { class: 'btn ghost small', disabled: data.pagination.page >= data.pagination.pages, onclick: () => (location.hash = `#/services?${new URLSearchParams({ q, category, page: page + 1 })}`) }, 'Next'));
+    search.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') go(); });
+    catSel.addEventListener('change', go);
 
     fill(view,
-      ...pageHead('Services', 'Every price is in KES and includes the KSh 50 service fee.'),
+      pageHead('Services', 'Every price is in your display currency and includes the service fee.'),
+      h('div', { class: 'searchrow' }, search, h('button', { class: 'sq', 'aria-label': 'Search', onclick: go }, svg(ICO.filter, 20))),
+      h('label', null, 'Category'), catSel,
       h('div', { class: 'card' },
-        h('div', { class: 'grid two' }, h('div', null, h('label', null, 'Search'), search), h('div', null, h('label', null, 'Category'), catSel)),
-        h('button', { class: 'btn small', onclick: go, style: 'margin-top:12px' }, 'Apply')),
-      h('div', { class: 'card' }, rows.length ? rows : h('p', { class: 'muted' }, 'No services match your search.'), pager));
+        data.services.length ? data.services.map(serviceRow) : h('p', { class: 'muted' }, 'No services match your search.'),
+        h('div', { class: 'pagination' },
+          h('button', { class: 'btn ghost small', disabled: data.pagination.page <= 1, onclick: () => (location.hash = `#/services?${new URLSearchParams({ q, category, page: page - 1 })}`) }, 'Previous'),
+          h('span', { class: 'muted' }, `Page ${data.pagination.page} / ${data.pagination.pages} · ${num(data.pagination.total)}`),
+          h('button', { class: 'btn ghost small', disabled: data.pagination.page >= data.pagination.pages, onclick: () => (location.hash = `#/services?${new URLSearchParams({ q, category, page: page + 1 })}`) }, 'Next'))));
   }
 
-  // ------------------------------------------------------------------ order form
+  // ------------------------------------------------------------------ new order
   async function orderView(params = {}) {
     stopTimer();
-    fill(view, ...pageHead('New order', 'Pick a service, paste your link and pay from your wallet.'));
     let services;
     try { services = (await loadServices({ per_page: 200 })).services; }
-    catch (e) { return fill(view, ...pageHead('New order'), errBox(e.message)); }
+    catch (e) { return fill(view, pageHead('New order'), errBox(e.message)); }
+    if (stale()) return;
 
     const preId = Number(params.service) || null;
     const search = h('input', { type: 'search', placeholder: 'Search services…', autocomplete: 'off' });
@@ -176,13 +394,11 @@
     const hint = h('div', { class: 'hint' });
 
     fill(view,
-      ...pageHead('New order', 'Pick a service, paste your link and pay from your wallet.'),
-      h('div', { class: 'grid two' },
-        h('div', { class: 'card' },
-          h('h2', null, 'Order details'),
-          h('label', null, 'Search'), search,
-          h('label', null, 'Service'), svcSel, hint, formBox),
-        h('div', { class: 'card' }, h('h2', null, 'Service info'), infoBox)));
+      pageHead('New order', 'Pick a service, paste your link and pay from your wallet.'),
+      h('div', { class: 'searchrow' }, search, h('button', { class: 'sq', 'aria-label': 'Filter' }, svg(ICO.filter, 20))),
+      h('label', null, 'Service'), svcSel, hint,
+      h('div', { class: 'card' }, h('h2', null, 'Order details'), formBox),
+      h('div', { class: 'card' }, h('h2', null, 'Service info'), infoBox));
 
     function renderOptions(selectedId) {
       const q = search.value.trim().toLowerCase();
@@ -190,11 +406,10 @@
       const shown = list.slice(0, 300);
       fill(svcSel,
         h('option', { value: '' }, list.length ? 'Select a service…' : 'No matching services'),
-        shown.map((s) => h('option', { value: s.id }, `${s.name} — ${s.flat ? kes(s.rate_cents) : per1000(s.rate_cents)}`)));
+        shown.map((s) => h('option', { value: s.id }, `${s.name} — ${s.flat ? amt(s.rate_cents) : per1000(s.rate_cents)}`)));
       hint.textContent = list.length > shown.length ? `Showing ${shown.length} of ${list.length}. Refine your search.` : `${list.length} service(s)`;
       const target = selectedId || (preId && shown.some((s) => s.id === preId) ? preId : null);
-      if (target) svcSel.value = String(target);
-      if (target) showForm(services.find((s) => s.id === Number(target)));
+      if (target) { svcSel.value = String(target); showForm(services.find((s) => s.id === Number(target))); }
     }
 
     function showForm(service) {
@@ -202,35 +417,35 @@
       fill(formBox);
       const inputs = {};
       const def = state.meta.fields;
-      const totalEl = h('div', { class: 'amt' }, '—');
-      const quoteNote = h('div', { class: 'hint' });
-      const btn = h('button', { class: 'btn block' }, `Place order · ${kes(0)}`);
-
-      let lastQuote = 0;
-      const qtyInput = () => inputs.quantity;
+      const totalEl = h('div', { class: 'v big' }, '—');
+      const note = h('div', { class: 'hint' });
+      const btn = h('button', { class: 'btn block' }, 'Place order');
 
       function localTotal() {
         if (service.flat) return service.rate_cents;
-        const q = Number(qtyInput() && qtyInput().value);
+        const q = Number(inputs.quantity && inputs.quantity.value);
         if (!Number.isFinite(q) || q < 1) return 0;
         return Math.ceil((service.rate_cents * q) / 1000);
       }
 
-      let timer = null;
+      let t = null;
       function refreshQuote() {
-        const q = qtyInput() ? Number(qtyInput().value) : 0;
+        const q = inputs.quantity ? Number(inputs.quantity.value) : 0;
         const total = localTotal();
-        totalEl.textContent = total ? kes(total) : '—';
-        btn.textContent = `Place order${total ? ` · ${kes(total)}` : ''}`;
+        totalEl.textContent = total ? amt(total) : '—';
+        btn.textContent = `Place order${total ? ` · ${amt(total)}` : ''}`;
         btn.disabled = !total;
-        clearTimeout(timer);
-        timer = setTimeout(async () => {
+        clearTimeout(t);
+        t = setTimeout(async () => {
           try {
-            const qs = new URLSearchParams({ service: service.id, quantity: q || 0 });
-            const quote = await api(`/quote?${qs}`);
-            lastQuote = quote.price_cents;
-            if (quote.problem) { quoteNote.textContent = quote.problem; btn.disabled = true; }
-            else { quoteNote.textContent = ''; totalEl.textContent = kes(quote.price_cents); btn.textContent = `Place order · ${kes(quote.price_cents)}`; btn.disabled = !quote.price_cents; }
+            const quote = await api(`/quote?${new URLSearchParams({ service: service.id, quantity: q || 0 })}`);
+            if (quote.problem) { note.textContent = quote.problem; btn.disabled = true; }
+            else {
+              note.textContent = '';
+              totalEl.textContent = amt(quote.price_cents);
+              btn.textContent = `Place order · ${amt(quote.price_cents)}`;
+              btn.disabled = !quote.price_cents;
+            }
           } catch { /* keep the local estimate */ }
         }, 250);
       }
@@ -246,12 +461,14 @@
         }
         const input = meta.multiline
           ? h('textarea', { placeholder: 'One per line' })
-          : h('input', { type: field === 'link' || field === 'media' ? 'url' : 'text', autocomplete: 'off' });
+          : h('input', { type: field === 'link' || field === 'media' ? 'url' : 'text', autocomplete: 'off', placeholder: field === 'link' ? 'https://…' : '' });
         inputs[field] = input;
         formBox.append(h('label', null, meta.label), input);
       });
 
-      formBox.append(h('div', { class: 'total' }, h('span', { class: 'muted' }, 'Total'), totalEl), quoteNote, btn);
+      formBox.append(h('div', { class: 'divider' }),
+        h('div', null, h('div', { class: 'k', style: 'color:var(--muted);font-size:.72rem;text-transform:uppercase;letter-spacing:.07em;margin-bottom:6px' }, 'Total'), totalEl),
+        note, btn);
 
       btn.addEventListener('click', async () => {
         if (!state.user) { toast('Please log in to place an order.', true); location.hash = '#/login'; return; }
@@ -261,22 +478,16 @@
         try {
           const res = await api('/orders', { method: 'POST', body });
           setBalance(res.balance_cents);
-          toast(`Order #${res.order.id} placed. Status: ${res.order.status}.`);
+          toast(`Order #${res.order.id} placed.`);
           location.hash = '#/orders';
-        } catch (e) {
-          toast(e.message, true);
-          btn.disabled = false;
-        }
+        } catch (e) { toast(e.message, true); btn.disabled = false; }
       });
 
-      if (qtyInput()) refreshQuote();
-      else refreshQuote();
-
+      refreshQuote();
       fill(infoBox,
-        h('div', { class: 'svc' },
-          h('div', { class: 'name' }, service.name),
-          h('div', { class: 'meta' }, `${service.category} · ${service.type}`),
-          h('div', { class: 'price', style: 'margin-top:8px' }, service.flat ? `${kes(service.rate_cents)} per order` : `${kes(service.rate_cents)} per 1000`)),
+        h('div', { style: 'font-weight:700;color:var(--text)' }, service.name),
+        h('div', { class: 'meta' }, `${service.category} · ${service.type}`),
+        h('div', { class: 'price', style: 'margin-top:8px;font-weight:800' }, service.flat ? `${amt(service.rate_cents)} per order` : `${amt(service.rate_cents)} per 1000`),
         h('p', { class: 'hint' }, service.description || ''));
     }
 
@@ -285,12 +496,240 @@
     renderOptions();
   }
 
-  // ------------------------------------------------------------------ auth views
-  function authView(mode) {
+  // ------------------------------------------------------------------ orders
+  function orderCard(o, opts = {}) {
+    const gen = opts.relative === false ? fmtDate : relDate;
+    return h('div', { class: 'order-item' },
+      h('div', { class: 'order-top' },
+        h('div', { style: 'min-width:0' },
+          h('div', { class: 'order-id' }, `#${o.id}`),
+          h('div', { class: 'order-name' }, o.service_name)),
+        badge(o.status)),
+      h('div', { class: 'order-meta' },
+        o.quantity ? h('span', null, `Qty ${num(o.quantity)}`) : null,
+        h('span', null, amt(o.price_cents)),
+        o.remains != null ? h('span', null, `${num(o.remains)} remaining`) : null,
+        h('span', null, gen(o.created_at))),
+      o.link ? h('div', { class: 'order-meta' }, safeLink(o.link)) : null,
+      opts.actions ? h('div', { class: 'order-actions' },
+        o.can_refill ? h('button', { class: 'btn ghost small', onclick: (ev) => opts.onAct(ev, o.id, 'refill') }, 'Refill') : null,
+        o.can_cancel ? h('button', { class: 'btn ghost small', onclick: (ev) => opts.onAct(ev, o.id, 'cancel') }, 'Cancel') : null,
+        h('a', { class: 'btn ghost small', href: `#/order?service=${o.service_id}` }, 'Reorder')) : null);
+  }
+
+  async function ordersView() {
+    if (!requireLogin()) return;
+    stopTimer();
+    const active = (state.filters && state.filters.orders) || 'all';
+    const listBox = h('div', null, skeletons(3));
+    const countLine = h('div', { class: 'countline' }, '—');
+
+    const search = h('input', { type: 'search', placeholder: 'Search order ID, service, or target link', autocomplete: 'off' });
+    const viewSel = h('select', { 'aria-label': 'View' }, h('option', { value: 'full' }, 'Full view'), h('option', { value: 'compact' }, 'Compact'));
+    const dateSel = h('select', { 'aria-label': 'Dates' }, h('option', { value: 'relative' }, 'Relative dates'), h('option', { value: 'exact' }, 'Exact dates'));
+
+    const chipDefs = [
+      ['all', 'All', () => true],
+      ['active', 'In progress', (o) => groupOf(o.status) === 'active'],
+      ['done', 'Completed', (o) => groupOf(o.status) === 'done'],
+      ['attention', 'Needs attention', (o) => groupOf(o.status) === 'attention'],
+    ];
+    const chips = h('div', { class: 'filters' }, chipDefs.map(([key, label]) =>
+      h('button', {
+        class: `chip${active === key ? ' active' : ''}`,
+        onclick: () => { state.filters = { ...(state.filters || {}), orders: key }; ordersView(); },
+      }, h('span', null, label), h('span', { class: 'box' }))));
+
+    async function act(ev, id, kind) {
+      ev.target.disabled = true;
+      try {
+        const res = await api(`/orders/${id}/${kind}`, { method: 'POST' });
+        toast(res.message || 'Done.');
+        await draw();
+      } catch (e) { toast(e.message, true); ev.target.disabled = false; }
+    }
+
+    async function draw() {
+      let data;
+      try { data = await api('/orders'); }
+      catch (e) { return fill(listBox, errBox(e.message)); }
+      if (stale()) return;
+      state.orders = data.orders;
+      renderChrome();
+      const q = search.value.trim().toLowerCase();
+      const pred = chipDefs.find(([k]) => k === active)[2];
+      const inGroup = data.orders.filter(pred);
+      const rows = inGroup.filter((o) => !q
+        || String(o.id) === q || String(o.service_name).toLowerCase().includes(q) || String(o.link || '').toLowerCase().includes(q));
+      const total = rows.reduce((sum, o) => sum + (o.price_cents || 0), 0);
+      countLine.textContent = rows.length
+        ? `${num(rows.length)} order${rows.length === 1 ? '' : 's'} · ${amt(total)}`
+        : '—';
+      fill(listBox, rows.length
+        ? rows.map((o) => orderCard(o, { actions: viewSel.value !== 'compact', relative: dateSel.value === 'relative', onAct: act }))
+        : emptyState('🧾', active === 'all' ? 'No orders yet' : 'Nothing here',
+            active === 'all' ? 'Place your first order and it will appear here.' : 'No orders match this filter.',
+            active === 'all' ? h('a', { class: 'btn', href: '#/order' }, 'New order') : null));
+    }
+
+    search.addEventListener('input', () => draw());
+    viewSel.addEventListener('change', () => draw());
+    dateSel.addEventListener('change', () => draw());
+
+    fill(view,
+      pageHead('Orders', 'View and manage your orders', h('a', { class: 'btn', href: '#/order' }, '+ New Order')),
+      chips,
+      h('div', { class: 'divider', style: 'margin:6px 0 16px' }),
+      h('label', { style: 'margin-top:0' }, 'Search'),
+      h('div', { class: 'searchrow' }, search, h('button', { class: 'sq', 'aria-label': 'Filters' }, svg(ICO.filter, 20))),
+      countLine,
+      h('div', { class: 'row', style: 'margin-bottom:16px;gap:10px;flex-wrap:nowrap' },
+        h('div', { style: 'flex:1' }, viewSel),
+        h('div', { style: 'flex:1' }, dateSel),
+        h('button', { class: 'sq', style: 'height:auto', 'aria-label': 'Export CSV', onclick: exportCsv }, svg(ICO.download, 20))),
+      listBox);
+
+    await draw();
+    state.timer = setInterval(() => {
+      if (currentRoute().name !== 'orders') return stopTimer();
+      draw().catch(() => {});
+    }, 20000);
+  }
+
+  function exportCsv() {
+    const rows = state.orders || [];
+    if (!rows.length) return toast('Nothing to export.', true);
+    const head = 'id,service,quantity,price_kes,status,created_at\n';
+    const body = rows.map((o) => [o.id, `"${String(o.service_name).replace(/"/g, '""')}"`, o.quantity ?? '', (o.price_cents / 100).toFixed(2), o.status, o.created_at].join(',')).join('\n');
+    const url = URL.createObjectURL(new Blob([head + body], { type: 'text/csv' }));
+    const a = h('a', { href: url, download: 'orders.csv' });
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  // ------------------------------------------------------------------ mass order
+  async function massView() {
+    if (!requireLogin()) return;
+    stopTimer();
+    let services;
+    try { services = (await loadServices({ per_page: 200 })).services; }
+    catch (e) { return fill(view, pageHead('Mass order'), errBox(e.message)); }
+    if (stale()) return;
+
+    const search = h('input', { type: 'search', placeholder: 'Search services…', autocomplete: 'off' });
+    const svcSel = h('select', { 'aria-label': 'Service' });
+    const qty = h('input', { type: 'number', min: '1', value: '1000', inputmode: 'numeric' });
+    const links = h('textarea', { placeholder: 'https://instagram.com/p/abc\nhttps://instagram.com/p/def' });
+    const summary = h('div', { style: 'font-size:1.5rem;font-weight:800' }, '—');
+    const results = h('div');
+    const runBtn = h('button', { class: 'btn block' }, 'Place all orders');
+
+    const current = () => services.find((s) => s.id === Number(svcSel.value));
+    const list = () => links.value.split('\n').map((l) => l.trim()).filter(Boolean);
+
+    function refresh() {
+      const s = current();
+      const n = list().length;
+      if (!s || !n) { summary.textContent = '—'; return; }
+      const q = s.flat ? 1 : Math.max(1, Number(qty.value) || 0);
+      summary.textContent = `${amt(s.flat ? s.rate_cents * n : Math.ceil((s.rate_cents * q) / 1000) * n)} · ${n} order${n === 1 ? '' : 's'}`;
+    }
+
+    search.addEventListener('input', () => {
+      const q = search.value.trim().toLowerCase();
+      const found = services.filter((s) => !q || s.name.toLowerCase().includes(q) || String(s.id) === q).slice(0, 300);
+      fill(svcSel, h('option', { value: '' }, found.length ? 'Select a service…' : 'No matching services'),
+        found.map((s) => h('option', { value: s.id }, `${s.name} — ${s.flat ? amt(s.rate_cents) : per1000(s.rate_cents)}`)));
+      refresh();
+    });
+    [svcSel, qty, links].forEach((el) => el.addEventListener('input', refresh));
+
+    runBtn.addEventListener('click', async () => {
+      const s = current();
+      const items = list();
+      if (!s) return toast('Choose a service first.', true);
+      if (!items.length) return toast('Paste at least one link.', true);
+      runBtn.disabled = true;
+      const out = [];
+      for (let i = 0; i < items.length; i += 1) {
+        runBtn.textContent = `Placing ${i + 1} of ${items.length}…`;
+        try {
+          const body = { service: s.id, link: items[i] };
+          if (s.fields.includes('quantity')) body.quantity = Math.max(1, Number(qty.value) || 1);
+          const res = await api('/orders', { method: 'POST', body });
+          setBalance(res.balance_cents);
+          out.push({ ok: true, line: items[i], id: res.order.id });
+        } catch (e) { out.push({ ok: false, line: items[i], error: e.message }); }
+      }
+      runBtn.disabled = false;
+      runBtn.textContent = 'Place all orders';
+      const okCount = out.filter((o) => o.ok).length;
+      fill(results, h('div', { class: 'card' },
+        h('h2', null, `${okCount} of ${out.length} placed`),
+        h('div', { class: 'table-wrap' }, h('table', null, h('tbody', null, out.map((o) => h('tr', null,
+          h('td', { class: 'meta' }, o.line),
+          h('td', null, o.ok ? badge('queued') : badge('failed')),
+          h('td', { class: 'meta' }, o.ok ? `#${o.id}` : o.error))))))));
+      toast(`${okCount} order(s) placed.`);
+    });
+
+    fill(view,
+      pageHead('Mass order', 'Paste one link per line — each line becomes its own order.'),
+      h('div', { class: 'searchrow' }, search, h('button', { class: 'sq', 'aria-label': 'Filter' }, svg(ICO.filter, 20))),
+      h('label', null, 'Service'), svcSel,
+      h('label', null, 'Target links (one per line)'), links,
+      h('label', null, 'Quantity per order'), qty,
+      h('div', { class: 'card' },
+        h('div', { class: 'k', style: 'color:var(--muted);font-size:.72rem;text-transform:uppercase;letter-spacing:.07em;margin-bottom:8px' }, 'Estimated total'),
+        summary),
+      runBtn, results);
+    search.dispatchEvent(new Event('input'));
+  }
+
+  // ------------------------------------------------------------------ drip
+  function dripView() {
+    stopTimer();
+    fill(view,
+      pageHead('Drip campaigns', 'Schedule the same order to repeat on a timer.'),
+      emptyState('⏳', 'Drip campaigns are not available yet',
+        'Scheduling needs a background worker this deployment does not run. Use Mass order for one-off batches.',
+        h('a', { class: 'btn', href: '#/mass' }, 'Open Mass order')));
+  }
+
+  // ------------------------------------------------------------------ auth (with Google)
+  function googleButton() {
+    const enabled = Boolean(state.meta && state.meta.googleEnabled);
+    const btn = h('a', {
+      class: 'btn-google',
+      href: enabled ? '/api/auth/google' : '#',
+      'aria-disabled': enabled ? null : 'true',
+      rel: 'nofollow',
+      onclick: (ev) => {
+        if (!enabled) {
+          ev.preventDefault();
+          toast('Google sign-in is not configured yet — add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET.', true);
+        }
+      },
+    });
+    btn.innerHTML = GOOGLE_G; // constant markup from this file
+    btn.append(document.createTextNode('Continue with Google'));
+    return btn;
+  }
+
+  const AUTH_ERRORS = {
+    google_state: 'Sign-in expired or was tampered with. Please try again.',
+    google_denied: 'Google sign-in was cancelled.',
+    google_exchange: 'Google did not return a valid token. Try again.',
+    google_profile: 'Could not read your Google profile. Try again.',
+    google_unverified: 'That Google account has no verified email address.',
+  };
+
+  function authView(mode, params = {}) {
+    stopTimer();
     const isLogin = mode === 'login';
     const email = h('input', { type: 'email', autocomplete: 'email', placeholder: 'you@example.com' });
     const password = h('input', { type: 'password', autocomplete: isLogin ? 'current-password' : 'new-password', placeholder: '••••••••' });
-    const err = h('div', { class: 'errtext' });
+    const err = h('div', { class: 'errtext' }, AUTH_ERRORS[params.error] || '');
     const btn = h('button', { class: 'btn block' }, isLogin ? 'Log in' : 'Create account');
 
     const submit = async () => {
@@ -302,273 +741,150 @@
         renderChrome();
         toast(isLogin ? 'Welcome back!' : 'Account created.');
         location.hash = '#/';
-      } catch (e) {
-        err.textContent = e.message;
-        btn.disabled = false;
-      }
+      } catch (e) { err.textContent = e.message; btn.disabled = false; }
     };
     btn.addEventListener('click', submit);
     password.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
 
     fill(view,
-      ...pageHead(isLogin ? 'Log in' : 'Create an account', isLogin ? 'Access your wallet and orders.' : 'Pay with M-Pesa. Prices in KES.'),
-      h('div', { class: 'card', style: 'max-width:440px' },
+      pageHead(isLogin ? 'Log in' : 'Create an account', isLogin ? 'Access your wallet and orders.' : 'Pay with M-Pesa. Prices in KES.'),
+      h('div', { class: 'card' },
+        googleButton(),
+        h('div', { class: 'or' }, 'or use your email'),
         h('label', null, 'Email'), email,
-        h('label', null, 'Password'), password, err, btn,
+        h('label', null, 'Password'), password,
+        err, btn,
         h('p', { class: 'hint' }, isLogin ? 'No account yet? ' : 'Already registered? ',
-          h('a', { href: isLogin ? '#/register' : '#/login' }, isLogin ? 'Create one' : 'Log in'))));
-  }
-
-  // ------------------------------------------------------------------ orders
-  async function ordersView() {
-    if (!requireLogin()) return;
-    stopTimer();
-    fill(view, ...pageHead('My orders', 'Statuses update automatically.'), h('p', { class: 'muted' }, 'Loading…'));
-
-    async function draw() {
-      let data;
-      try { data = await api('/orders'); } catch (e) { return fill(view, ...pageHead('My orders'), errBox(e.message)); }
-      const rows = data.orders.map((o) =>
-        h('tr', null,
-          h('td', null, h('strong', null, `#${o.id}`), h('div', { class: 'meta' }, o.service_name), h('div', { class: 'meta' }, safeLink(o.link))),
-          h('td', null, num(o.quantity)),
-          h('td', { class: 'num' }, kes(o.price_cents), o.refunded_cents ? h('div', { class: 'meta' }, `refunded ${kes(o.refunded_cents)}`) : null),
-          h('td', null, badge(o.status), o.remains != null ? h('div', { class: 'meta' }, `${num(o.remains)} remaining`) : null),
-          h('td', null, h('div', { class: 'meta' }, fmtDate(o.created_at))),
-          h('td', null, h('div', { class: 'row' },
-            o.can_refill ? h('button', { class: 'btn ghost small', onclick: (ev) => act(ev, o.id, 'refill') }, 'Refill') : null,
-            o.can_cancel ? h('button', { class: 'btn ghost small', onclick: (ev) => act(ev, o.id, 'cancel') }, 'Cancel') : null,
-            o.status === 'submitting' ? h('button', { class: 'btn ghost small', onclick: (ev) => act(ev, o.id, 'refresh') }, 'Refresh') : null))));
-
-      fill(view,
-        ...pageHead('My orders', 'Statuses update automatically every 20 seconds.'),
-        data.orders.length
-          ? h('div', { class: 'card table-wrap' },
-              h('table', null,
-                h('thead', null, h('tr', null,
-                  h('th', null, 'Order'), h('th', null, 'Qty'), h('th', { class: 'num' }, 'Price'),
-                  h('th', null, 'Status'), h('th', null, 'Placed'), h('th', null, ''))),
-                h('tbody', null, rows)))
-          : h('div', { class: 'card' }, h('p', { class: 'muted' }, 'No orders yet.'), h('a', { class: 'btn', href: '#/' }, 'Place your first order')));
-    }
-
-    async function act(ev, id, kind) {
-      ev.target.disabled = true;
-      try {
-        const res = await api(`/orders/${id}/${kind}`, { method: 'POST' });
-        toast(res.message || 'Done.');
-        await draw();
-      } catch (e) { toast(e.message, true); ev.target.disabled = false; }
-    }
-
-    await draw();
-    state.timer = setInterval(() => {
-      if (currentRoute().name !== 'orders') return stopTimer();
-      draw().catch(() => {});
-    }, 20000);
+          h('a', { href: isLogin ? '#/register' : '#/login' }, isLogin ? 'Create one' : 'Log in')),
+        state.meta && state.meta.googleEnabled
+          ? null
+          : h('p', { class: 'hint' }, 'Google sign-in appears once GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are set.')));
   }
 
   // ------------------------------------------------------------------ wallet
   async function walletView() {
     if (!requireLogin()) return;
     stopTimer();
-    fill(view, ...pageHead('Wallet', 'Top up with M-Pesa and pay for orders instantly.'));
-
     let data;
-    try { data = await api('/wallet'); } catch (e) { return fill(view, ...pageHead('Wallet'), errBox(e.message)); }
+    try { data = await api('/wallet'); }
+    catch (e) { return fill(view, pageHead('Wallet'), errBox(e.message)); }
+    if (stale()) return;
     setBalance(data.balance_cents);
 
     const phone = h('input', { type: 'tel', placeholder: '0712 345 678', autocomplete: 'tel' });
     const amount = h('input', { type: 'number', min: state.meta.minTopupKes, max: state.meta.maxTopupKes, value: 500, inputmode: 'numeric' });
     const err = h('div', { class: 'errtext' });
-    const orderBtn = h('button', { class: 'btn block' }, 'Send M-Pesa prompt');
+    const btn = h('button', { class: 'btn block' }, 'Send M-Pesa prompt');
 
-    orderBtn.addEventListener('click', async () => {
+    btn.addEventListener('click', async () => {
       err.textContent = '';
-      orderBtn.disabled = true;
-      orderBtn.textContent = 'Sending prompt…';
+      btn.disabled = true;
       try {
         const res = await api('/wallet/topup', { method: 'POST', body: { phone: phone.value, amount_kes: Number(amount.value) } });
         toast(res.message || 'Check your phone.');
-        watchTopup(res.topup_id);
-      } catch (e) {
-        err.textContent = e.message;
-      } finally {
-        orderBtn.disabled = false;
-        orderBtn.textContent = 'Send M-Pesa prompt';
-      }
+        watch(res.topup_id);
+      } catch (e) { err.textContent = e.message; }
+      finally { btn.disabled = false; }
     });
 
-    let watcher = null;
-    function watchTopup(id) {
-      clearInterval(watcher);
-      let tries = 0;
-      watcher = setInterval(async () => {
-        tries += 1;
+    function watch(id) {
+      let n = 0;
+      state.timer = setInterval(async () => {
+        n += 1;
         try {
           const { topup } = await api(`/wallet/topup/${id}`);
           if (topup.status !== 'pending') {
-            clearInterval(watcher);
-            toast(topup.status === 'paid' ? `Payment received: ${kes(topup.credited_cents)}` : 'Payment was not completed.', topup.status !== 'paid');
+            stopTimer();
+            toast(topup.status === 'paid' ? `Payment received: ${amt(topup.credited_cents)}` : 'Payment was not completed.', topup.status !== 'paid');
             if (topup.status === 'paid') walletView();
-          } else if (tries > 20) clearInterval(watcher);
-        } catch { clearInterval(watcher); }
+          } else if (n > 20) stopTimer();
+        } catch { stopTimer(); }
       }, 3000);
-      state.timer = watcher;
     }
 
-    const txRows = data.transactions.map((t) =>
-      h('tr', null,
-        h('td', null, fmtDate(t.created_at)),
-        h('td', null, t.type),
-        h('td', { class: 'num', style: t.amount_cents < 0 ? 'color:#fca5a5' : 'color:#86efac' }, `${t.amount_cents > 0 ? '+' : ''}${kes(t.amount_cents)}`),
-        h('td', null, t.note || '')));
-
-    const topupRows = data.topups.map((t) =>
-      h('tr', null, h('td', null, fmtDate(t.created_at)), h('td', { class: 'num' }, kes(t.credited_cents)), h('td', null, badge(t.status)), h('td', null, t.receipt || '—')));
-
     fill(view,
-      ...pageHead('Wallet', 'Top up with M-Pesa and pay for orders instantly.'),
-      h('div', { class: 'grid two' },
-        h('div', { class: 'card' },
-          h('div', { class: 'stat' }, h('div', { class: 'k' }, 'Balance'), h('div', { class: 'v' }, kes(data.balance_cents))),
-          h('h2', { style: 'margin-top:16px' }, 'Top up with M-Pesa'),
-          state.meta.mpesaEnabled ? [
-            h('label', null, 'M-Pesa phone number'), phone,
-            h('label', null, 'Amount (KES)'), amount,
-            h('div', { class: 'row', style: 'margin-top:10px' },
-              [100, 250, 500, 1000, 2500].map((v) => h('button', { class: 'btn ghost small', onclick: () => { amount.value = v; } }, `KSh ${v}`))),
-            err, orderBtn,
-            h('p', { class: 'hint' }, 'You will receive an M-Pesa prompt. Your wallet is credited only after Safaricom confirms the payment.')]
+      pageHead('Wallet', 'Top up with M-Pesa and pay for orders instantly.'),
+      h('div', { class: 'card' },
+        h('h2', null, 'Wallet balance'),
+        h('div', { style: 'font-size:2rem;font-weight:800;letter-spacing:-.02em' }, amt(data.balance_cents)),
+        h('p', { class: 'muted', style: 'margin:10px 0 0' }, 'Available to spend on orders.')),
+      h('div', { class: 'card' },
+        h('h2', null, 'Top up with M-Pesa'),
+        state.meta.mpesaEnabled
+          ? [h('label', null, 'M-Pesa phone number'), phone,
+             h('label', null, 'Amount (KES)'), amount,
+             h('div', { class: 'row', style: 'margin-top:12px' }, [100, 250, 500, 1000, 2500].map((v) => h('button', { class: 'btn ghost small', onclick: () => { amount.value = v; } }, `KSh ${v}`))),
+             err, btn,
+             h('p', { class: 'hint' }, 'You will receive an M-Pesa prompt. Your wallet is credited only after Safaricom confirms the payment.')]
           : h('p', { class: 'muted' }, 'M-Pesa is not configured yet. Ask the admin to credit your wallet.')),
-        h('div', { class: 'card' },
-          h('h2', null, 'Recent transactions'),
-          data.transactions.length
-            ? h('div', { class: 'table-wrap' }, h('table', null, h('tbody', null, txRows)))
-            : h('p', { class: 'muted' }, 'No transactions yet.'))),
+      h('div', { class: 'card' },
+        h('h2', null, 'Recent transactions'),
+        data.transactions.length
+          ? h('div', { class: 'table-wrap' }, h('table', null, h('tbody', null, data.transactions.map((t) => h('tr', null,
+              h('td', null, fmtDate(t.created_at)), h('td', null, t.type),
+              h('td', { class: 'num', style: t.amount_cents < 0 ? 'color:#ffb4b4' : 'color:#3ee07b' }, `${t.amount_cents > 0 ? '+' : ''}${amt(t.amount_cents)}`),
+              h('td', { class: 'meta' }, t.note || ''))))))
+          : h('p', { class: 'muted' }, 'No transactions yet.')),
       data.topups.length
         ? h('div', { class: 'card' }, h('h2', null, 'M-Pesa top-ups'),
             h('div', { class: 'table-wrap' }, h('table', null,
               h('thead', null, h('tr', null, h('th', null, 'Date'), h('th', { class: 'num' }, 'Amount'), h('th', null, 'Status'), h('th', null, 'Receipt'))),
-              h('tbody', null, topupRows))))
+              h('tbody', null, data.topups.map((t) => h('tr', null,
+                h('td', null, fmtDate(t.created_at)), h('td', { class: 'num' }, amt(t.credited_cents)), h('td', null, badge(t.status)), h('td', null, t.receipt || '—')))))))
         : null);
   }
 
   // ------------------------------------------------------------------ admin
   async function adminView() {
     if (!requireLogin()) return;
-    if (!state.user.is_admin) return fill(view, ...pageHead('Admin'), errBox('Admin access required.'));
+    if (!state.user.is_admin) return fill(view, pageHead('Admin'), errBox('Admin access required.'));
     stopTimer();
-    fill(view, ...pageHead('Admin', 'Provider balance, revenue and profit in KES.'), h('p', { class: 'muted' }, 'Loading…'));
+    fill(view, pageHead('Admin', 'Provider balance, revenue and profit in KES.'), h('div', { class: 'card' }, skeletons(3)));
 
     let stats;
-    try { stats = await api('/admin/stats'); } catch (e) { return fill(view, ...pageHead('Admin'), errBox(e.message)); }
+    try { stats = await api('/admin/stats'); }
+    catch (e) { return fill(view, pageHead('Admin'), errBox(e.message)); }
+    if (stale()) return;
 
     const markup = h('input', { type: 'number', step: '0.01', min: '0', value: stats.settings.markup });
     const rate = h('input', { type: 'number', step: '0.01', min: '0', value: stats.settings.kes_per_usd });
     const fee = h('input', { type: 'number', step: '1', min: '0', value: stats.settings.fee_kes });
-    const settingsMsg = h('div', { class: 'hint' });
-    const saveSettings = h('button', { class: 'btn block' }, 'Save settings');
-    saveSettings.addEventListener('click', async () => {
+    const msg = h('div', { class: 'hint' });
+    const save = h('button', { class: 'btn block' }, 'Save settings');
+    save.addEventListener('click', async () => {
       try {
         await api('/admin/settings', { method: 'POST', body: { markup: Number(markup.value), kes_per_usd: Number(rate.value), fee_kes: Number(fee.value) } });
-        settingsMsg.textContent = 'Saved. New prices apply immediately.';
+        msg.textContent = 'Saved. New prices apply immediately.';
         toast('Settings saved');
-      } catch (e) { settingsMsg.textContent = e.message; }
+      } catch (e) { msg.textContent = e.message; }
     });
 
     const provider = stats.provider_balance || {};
-    const providerLine = provider.error
-      ? `Unavailable: ${provider.error}`
-      : `$${Number(provider.balance_usd || 0).toFixed(2)} · ${kes(provider.balance_cents || 0)}`;
-
-    const overviewRows = [
-      ['Customers', num(stats.users)],
-      ['Customer wallet balances', kes(stats.customer_balances_cents)],
-      ['Orders', num(stats.orders)],
-      ['Pending M-Pesa payments', num(stats.pending_topups)],
-      ['Needs review', num(stats.needs_review)],
-    ].map(([k, v]) => h('tr', null, h('td', null, k), h('td', { class: 'num' }, v)));
-
-    const overviewCard = h('div', { class: 'card' },
-      h('h2', null, 'Overview'),
-      h('table', null, h('tbody', null, overviewRows)));
 
     fill(view,
-      ...pageHead('Admin', 'Provider balance, revenue and profit in KES.'),
+      pageHead('Admin', 'Provider balance, revenue and profit in KES.'),
       h('div', { class: 'grid stats' },
         h('div', { class: 'stat' }, h('div', { class: 'k' }, 'Revenue'), h('div', { class: 'v' }, kes(stats.revenue_cents))),
         h('div', { class: 'stat' }, h('div', { class: 'k' }, 'Provider cost'), h('div', { class: 'v' }, kes(stats.provider_cost_cents))),
         h('div', { class: 'stat' }, h('div', { class: 'k' }, 'Profit'), h('div', { class: 'v' }, kes(stats.profit_cents))),
-        h('div', { class: 'stat' }, h('div', { class: 'k' }, 'Provider balance'), h('div', { class: 'v' }, providerLine))),
-      h('div', { class: 'grid two' },
-        h('div', { class: 'card' },
-          h('h2', null, 'Pricing'),
-          h('label', null, 'Markup (0.30 = +30%)'), markup,
-          h('label', null, 'KES per USD'), rate,
-          h('label', null, 'Fixed fee per price (KES)'), fee,
-          saveSettings, settingsMsg,
-          h('p', { class: 'hint' }, 'Customer price = provider rate × (1 + markup) × KES/USD + fee.')),
-        overviewCard));
+        h('div', { class: 'stat' }, h('div', { class: 'k' }, 'Provider balance'), h('div', { class: 'v' }, provider.error ? '—' : `$${Number(provider.balance_usd || 0).toFixed(2)}`))),
+      h('div', { class: 'card' },
+        h('h2', null, 'Pricing'),
+        h('label', null, 'Markup (0.30 = +30%)'), markup,
+        h('label', null, 'KES per USD'), rate,
+        h('label', null, 'Fixed fee per price (KES)'), fee,
+        save, msg,
+        h('p', { class: 'hint' }, 'Customer price = provider rate × (1 + markup) × KES/USD + fee.')),
+      h('div', { class: 'card' }, h('h2', null, 'Overview'), h('table', null, h('tbody', null,
+        [['Customers', num(stats.users)], ['Customer balances', kes(stats.customer_balances_cents)], ['Orders', num(stats.orders)],
+         ['Pending M-Pesa', num(stats.pending_topups)], ['Needs review', num(stats.needs_review)]]
+          .map(([k, v]) => h('tr', null, h('td', null, k), h('td', { class: 'num' }, v)))))));
 
-    // Needs review
-    const reviewBox = h('div', { class: 'card' }, h('h2', null, 'Needs review'), h('p', { class: 'muted' }, 'Loading…'));
-    const usersBox = h('div', { class: 'card' }, h('h2', null, 'Customers'), h('p', { class: 'muted' }, 'Loading…'));
+    const reviewBox = h('div', { class: 'card' }, h('h2', null, 'Needs review'), skeletons(2));
+    const usersBox = h('div', { class: 'card' }, h('h2', null, 'Customers'), skeletons(2));
     view.append(reviewBox, usersBox);
 
-    try {
-      const { orders: reviewOrders } = await api('/admin/orders?status=needs_review');
-      const reviewRows = reviewOrders.map((o) => {
-        const retry = h('button', { class: 'btn small' }, 'Retry');
-        retry.addEventListener('click', (ev) => adminAction(ev, o.id, 'retry'));
-        const refund = h('button', { class: 'btn danger small' }, 'Refund');
-        refund.addEventListener('click', (ev) => adminAction(ev, o.id, 'refund'));
-        return h('tr', null,
-          h('td', null, `#${o.id}`, h('div', { class: 'meta' }, o.service_name)),
-          h('td', null, o.email),
-          h('td', { class: 'num' }, kes(o.price_cents)),
-          h('td', null, o.error || ''),
-          h('td', null, h('div', { class: 'row' }, retry, refund)));
-      });
-      fill(reviewBox,
-        h('h2', null, 'Needs review'),
-        h('p', { class: 'hint' }, 'Orders whose provider outcome is unknown. Retry reuses the same idempotency key; only refund after checking the provider dashboard.'),
-        reviewOrders.length
-          ? h('div', { class: 'table-wrap' }, h('table', null,
-              h('thead', null, h('tr', null,
-                h('th', null, 'Order'), h('th', null, 'Customer'), h('th', { class: 'num' }, 'Price'),
-                h('th', null, 'Error'), h('th', null, ''))),
-              h('tbody', null, reviewRows)))
-          : h('p', { class: 'muted' }, 'Nothing waiting for review.'));
-    } catch (e) { fill(reviewBox, h('h2', null, 'Needs review'), errBox(e.message)); }
-
-    try {
-      const { users } = await api('/admin/users');
-      const userRows = users.map((u) => {
-        const amt = h('input', { type: 'number', step: '1', placeholder: '+500 / -100' });
-        const note = h('input', { type: 'text', placeholder: 'Reason' });
-        const apply = h('button', { class: 'btn small' }, 'Apply');
-        apply.addEventListener('click', async () => {
-          apply.disabled = true;
-          try {
-            await api(`/admin/users/${u.id}/credit`, { method: 'POST', body: { amount_kes: Number(amt.value), note: note.value } });
-            toast('Wallet adjusted');
-            adminView();
-          } catch (e) { toast(e.message, true); apply.disabled = false; }
-        });
-        return h('tr', null,
-          h('td', null, u.email, u.is_admin ? h('span', { class: 'badge' }, 'admin') : null),
-          h('td', { class: 'num' }, kes(u.balance_cents)),
-          h('td', null, h('div', { class: 'row' }, amt, note, apply)));
-      });
-      fill(usersBox,
-        h('h2', null, 'Customers'),
-        h('div', { class: 'table-wrap' }, h('table', null,
-          h('thead', null, h('tr', null, h('th', null, 'Email'), h('th', { class: 'num' }, 'Balance'), h('th', null, 'Adjust (KES)'))),
-          h('tbody', null, userRows))));
-    } catch (e) { fill(usersBox, h('h2', null, 'Customers'), errBox(e.message)); }
-
-    async function adminAction(ev, id, kind) {
+    async function action(ev, id, kind) {
       ev.target.disabled = true;
       try {
         await api(`/admin/orders/${id}/${kind}`, { method: 'POST' });
@@ -576,6 +892,51 @@
         adminView();
       } catch (e) { toast(e.message, true); ev.target.disabled = false; }
     }
+
+    try {
+      const { orders: review } = await api('/admin/orders?status=needs_review');
+      if (stale()) return;
+      fill(reviewBox,
+        h('h2', null, 'Needs review'),
+        h('p', { class: 'hint' }, 'Provider outcome unknown. Retry reuses the same idempotency key; only refund after checking the provider dashboard.'),
+        review.length
+          ? h('div', { class: 'table-wrap' }, h('table', null,
+              h('thead', null, h('tr', null, h('th', null, 'Order'), h('th', null, 'Customer'), h('th', { class: 'num' }, 'Price'), h('th', null, 'Error'), h('th', null, ''))),
+              h('tbody', null, review.map((o) => h('tr', null,
+                h('td', null, `#${o.id}`, h('div', { class: 'meta' }, o.service_name)),
+                h('td', null, o.email),
+                h('td', { class: 'num' }, kes(o.price_cents)),
+                h('td', { class: 'meta' }, o.error || ''),
+                h('td', null, h('div', { class: 'row' },
+                  h('button', { class: 'btn small', onclick: (ev) => action(ev, o.id, 'retry') }, 'Retry'),
+                  h('button', { class: 'btn danger small', onclick: (ev) => action(ev, o.id, 'refund') }, 'Refund'))))))))
+          : h('p', { class: 'muted' }, 'Nothing waiting for review.'));
+    } catch (e) { fill(reviewBox, h('h2', null, 'Needs review'), errBox(e.message)); }
+
+    try {
+      const { users } = await api('/admin/users');
+      if (stale()) return;
+      fill(usersBox,
+        h('h2', null, 'Customers'),
+        h('div', { class: 'table-wrap' }, h('table', null,
+          h('thead', null, h('tr', null, h('th', null, 'Email'), h('th', { class: 'num' }, 'Balance'), h('th', null, 'Adjust (KES)'))),
+          h('tbody', null, users.map((u) => {
+            const amountField = h('input', { type: 'number', step: '1', placeholder: '+500 / -100' });
+            const note = h('input', { type: 'text', placeholder: 'Reason' });
+            const apply = h('button', { class: 'btn small', onclick: async () => {
+              apply.disabled = true;
+              try {
+                await api(`/admin/users/${u.id}/credit`, { method: 'POST', body: { amount_kes: Number(amountField.value), note: note.value } });
+                toast('Wallet adjusted');
+                adminView();
+              } catch (e) { toast(e.message, true); apply.disabled = false; }
+            } }, 'Apply');
+            return h('tr', null,
+              h('td', null, u.email, u.is_admin ? h('span', { class: 'badge' }, ' admin') : null),
+              h('td', { class: 'num' }, kes(u.balance_cents)),
+              h('td', null, h('div', { class: 'row' }, amountField, note, apply)));
+          })))));
+    } catch (e) { fill(usersBox, h('h2', null, 'Customers'), errBox(e.message)); }
   }
 
   // ------------------------------------------------------------------ router
@@ -588,36 +949,65 @@
 
   async function route() {
     stopTimer();
+    closeMenu();
+    closePopover();
     const { name, params } = currentRoute();
+    state.route = name;
     renderChrome();
     window.scrollTo({ top: 0 });
+    fill(view);
     switch (name) {
-      case '':
-      case 'order':
-        return orderView(params);
-      case 'services':
-        return servicesView(params);
-      case 'login':
-        return authView('login');
-      case 'register':
-        return authView('register');
-      case 'orders':
-        return ordersView();
-      case 'wallet':
-        return walletView();
-      case 'admin':
-        return adminView();
+      case '': return dashboardView();
+      case 'order': return orderView(params);
+      case 'services': return servicesView(params);
+      case 'login': return authView('login', params);
+      case 'register': return authView('register', params);
+      case 'orders': return ordersView();
+      case 'mass': return massView();
+      case 'drip': return dripView();
+      case 'wallet': return walletView();
+      case 'admin': return adminView();
       default:
-        return fill(view, ...pageHead('Not found'), h('p', { class: 'muted' }, 'That page does not exist. '), h('a', { class: 'btn', href: '#/' }, 'Go home'));
+        return fill(view, pageHead('Not found'), h('p', { class: 'muted' }, 'That page does not exist.'),
+          h('a', { class: 'btn', href: '#/' }, 'Go home'));
     }
   }
 
   window.addEventListener('hashchange', route);
+  document.getElementById('menuBtn').addEventListener('click', (ev) => { ev.preventDefault(); toggleMenu(); });
+  document.getElementById('closeBtn').addEventListener('click', () => {
+    if (currentRoute().name) location.hash = '#/';
+    else toast('Use your browser menu to close the app.');
+  });
+  document.getElementById('updateNow').addEventListener('click', () => location.reload());
+  document.getElementById('updateLater').addEventListener('click', () => {
+    state.updateDismissed = true;
+    document.getElementById('updateBanner').hidden = true;
+  });
+  document.addEventListener('click', (ev) => {
+    if (popoverEl && !popoverEl.contains(ev.target)) closePopover();
+    if (!menuEl().hidden && !menuEl().contains(ev.target) && ev.target.closest('#menuBtn') === null) closeMenu();
+  });
 
   (async () => {
-    try { state.meta = await api('/meta'); } catch { state.meta = { siteName: 'SMM Panel', mpesaEnabled: false, minTopupKes: 50, maxTopupKes: 150000, fields: {} }; }
+    try { state.meta = await api('/meta'); }
+    catch {
+      state.meta = {
+        siteName: 'HilaPanel', mpesaEnabled: false, googleEnabled: false,
+        minTopupKes: 50, maxTopupKes: 150000, kesPerUsd: 129, build: 'dev', fields: {},
+      };
+    }
+    state.build = state.meta.build;
     try { const { user } = await api('/auth/me'); state.user = user; } catch { /* logged out */ }
     renderChrome();
     route();
+
+    // "An app update is ready" when a new deployment reports a different build id
+    setInterval(async () => {
+      try {
+        const m = await api('/meta');
+        if (m.build && state.build && m.build !== state.build) showUpdateBanner();
+      } catch { /* offline */ }
+    }, 90000);
   })();
 })();

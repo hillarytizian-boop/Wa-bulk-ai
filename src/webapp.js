@@ -127,7 +127,10 @@ function createApp() {
 
   // eslint-disable-next-line no-unused-vars
   app.use((err, _req, res, _next) => {
-    if (err && err.type === 'entity.parse.failed') return res.status(400).json({ error: 'Invalid JSON' });
+    // Some runtimes surface body-parser failures as a bare SyntaxError without `type`.
+    if (err && (err.type === 'entity.parse.failed' || err instanceof SyntaxError)) {
+      return res.status(400).json({ error: 'Invalid JSON' });
+    }
     if (err && err.type === 'entity.too.large') return res.status(413).json({ error: 'Request too large' });
     if (err && err.expose && err.status) return res.status(err.status).json({ error: err.message });
     console.error('[error]', err);

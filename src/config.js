@@ -58,6 +58,16 @@ module.exports = {
     password: process.env.ADMIN_PASSWORD || '',
   },
 
+  // Google sign-in (OAuth 2.0 code flow). Disabled unless both values are set.
+  google: {
+    clientId: process.env.GOOGLE_CLIENT_ID || '',
+    clientSecret: process.env.GOOGLE_CLIENT_SECRET || '',
+    get enabled() {
+      return Boolean(this.clientId && this.clientSecret);
+    },
+    redirectUri: process.env.GOOGLE_REDIRECT_URI || `${(process.env.PUBLIC_URL || `http://localhost:${num(process.env.PORT, 3000)}`).replace(/\/$/, '')}/api/auth/google/callback`,
+  },
+
   mpesa: {
     enabled: Boolean(process.env.MPESA_CONSUMER_KEY && process.env.MPESA_CONSUMER_SECRET && process.env.MPESA_PASSKEY),
     env: mpesaEnv,
