@@ -74,10 +74,17 @@ function createApp() {
     }
     jsonParser(req, res, (err) => {
       if (!err) return next();
+      res.setHeader('x-diag-body', String(`${err.name}|${err.type || ''}|${err.status || ''}|${err.code || ''}|${String(err.message || '').slice(0, 90)}`));
       if (err.type === 'entity.too.large') return res.status(413).json({ error: 'Request too large' });
       if (isBodyError(err)) return res.status(400).json({ error: 'Invalid JSON' });
       return next(err);
     });
+  });
+
+  app.use((err, req, res, next) => {
+    if (res.headersSent) return next(err);
+    res.setHeader('x-diag-err', String(`${err && err.name}|${err && (err.type || '')}|${err && (err.status || '')}|${String((err && err.message) || '').slice(0, 90)}`));
+    next(err);
   });
 
   app.use(cookieParser());
