@@ -44,7 +44,7 @@ function createApp() {
       crossOriginEmbedderPolicy: false,
       crossOriginResourcePolicy: { policy: 'same-origin' },
       referrerPolicy: { policy: 'no-referrer' },
-      hsts: config.cookieSecure ? { maxAge: 15552000, includeSubDomains: true } : false,
+      hsts: config.cookieSecure ? { maxAge: 63072000, includeSubDomains: true } : false,
     })
   );
   app.use(compression());
@@ -63,7 +63,9 @@ function createApp() {
       t.startsWith('request.') ||
       t.startsWith('body.') ||
       err.code === 'ERR_STREAM_ALREADY_FINISHED' ||
-      /unexpected end of json|json at position|malformed|stream is not readable|already finished|aborted/i.test(String(err.message || ''))
+      // Vercel's own body handling throws a bare Error("Invalid JSON") - no type, no status, not a
+      // SyntaxError - so the message is the only signal left to go on.
+      /invalid json|unexpected end of json|json at position|unexpected token|malformed|stream is not readable|already finished|aborted/i.test(String(err.message || ''))
     );
   };
   app.use((req, res, next) => {
@@ -74,17 +76,10 @@ function createApp() {
     }
     jsonParser(req, res, (err) => {
       if (!err) return next();
-      res.setHeader('x-diag-body', String(`${err.name}|${err.type || ''}|${err.status || ''}|${err.code || ''}|${String(err.message || '').slice(0, 90)}`));
       if (err.type === 'entity.too.large') return res.status(413).json({ error: 'Request too large' });
       if (isBodyError(err)) return res.status(400).json({ error: 'Invalid JSON' });
       return next(err);
     });
-  });
-
-  app.use((err, req, res, next) => {
-    if (res.headersSent) return next(err);
-    res.setHeader('x-diag-err', String(`${err && err.name}|${err && (err.type || '')}|${err && (err.status || '')}|${String((err && err.message) || '').slice(0, 90)}`));
-    next(err);
   });
 
   app.use(cookieParser());
@@ -141,19 +136,6 @@ function createApp() {
     res.json({ ok: true, ...result });
   });
 
-  app.post('/api/__diag', (req, res) => {
-    res.json({
-      build: process.env.VERCEL_GIT_COMMIT_SHA || 'local',
-      bodyType: typeof req.body,
-      bodyKeys: req.body && typeof req.body === 'object' ? Object.keys(req.body).slice(0, 8) : null,
-      readableEnded: Boolean(req.readableEnded),
-      endEmitted: Boolean(req._readableState && req._readableState.endEmitted),
-      complete: Boolean(req.complete),
-      contentType: req.get('content-type') || null,
-      contentLength: req.get('content-length') || null,
-    });
-  });
-
   app.use('/api', apiLimiter, noStore, auth.loadUser, csrfGuard);
   app.use('/api/auth', auth.router);
   app.use('/api/admin', adminLimiter, require('./routes/admin'));
@@ -197,6 +179,9 @@ function createApp() {
       return res.status(400).json({ error: 'Invalid JSON' });
     }
     if (err && /^(entity|request|body)\./.test(String(err.type || ''))) {
+      return res.status(400).json({ error: 'Invalid JSON' });
+    }
+    if (err && !err.status && /invalid json|unexpected token|json at position|unexpected end of json/i.test(String(err.message || ''))) {
       return res.status(400).json({ error: 'Invalid JSON' });
     }
     if (err && Number(err.status) >= 400 && Number(err.status) < 500) {
