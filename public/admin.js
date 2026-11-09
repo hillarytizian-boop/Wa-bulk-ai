@@ -140,6 +140,25 @@
       } catch (err) { note.textContent = err.message; save.disabled = false; }
     });
 
+    // ---- PayHero callback URL (admin-only; the path segment is a derived secret)
+    const callbackBox = h('div', null, skeletons(1));
+    api('/admin/payhero')
+      .then((p) => {
+        const field = h('input', { type: 'text', readonly: true, value: p.callback_url });
+        const copy = h('button', { class: 'btn ghost small' }, 'Copy');
+        copy.addEventListener('click', async () => {
+          try { await navigator.clipboard.writeText(p.callback_url); toast('Callback URL copied'); }
+          catch { field.select(); toast('Press Ctrl/Cmd + C to copy'); }
+        });
+        fill(callbackBox,
+          h('label', null, 'Callback URL'), field,
+          h('div', { class: 'row', style: 'gap:8px;margin-top:8px' }, copy),
+          h('p', { class: 'hint' },
+            `PayHero enabled: ${p.enabled ? 'yes' : 'no'} · channel ${p.channel_id || '—'} · account ${p.account_id || '—'}. `,
+            'The URL contains a secret path segment: treat it like a password and do not paste it in public.'));
+      })
+      .catch((err) => fill(callbackBox, h('p', { class: 'hint' }, err.message)));
+
     const provider = stats.provider_balance || {};
     const reviewBox = h('div', { class: 'card' }, h('h2', null, 'Needs review'), skeletons(2));
     const usersBox = h('div', { class: 'card' }, h('h2', null, 'Customers'), skeletons(2));
@@ -153,6 +172,10 @@
         h('div', { class: 'stat' }, h('div', { class: 'k' }, 'Profit'), h('div', { class: 'v' }, kes(stats.profit_cents))),
         h('div', { class: 'stat' }, h('div', { class: 'k' }, 'Provider balance'),
           h('div', { class: 'v' }, provider.error ? '—' : `$${Number(provider.balance_usd || 0).toFixed(2)}`))),
+      h('div', { class: 'card' },
+        h('h2', null, 'PayHero payment callback'),
+        h('p', { class: 'hint' }, 'Paste this exact URL into PayHero if it ever asks where to send payment updates. Every STK push already carries it, so payments work without this.'),
+        callbackBox),
       h('div', { class: 'card' },
         h('h2', null, 'Pricing'),
         h('label', null, 'Markup (0.30 = +30%)'), markup,

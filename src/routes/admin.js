@@ -4,6 +4,8 @@ const smm = require('../smm');
 const pricing = require('../pricing');
 const orders = require('../orders');
 const audit = require('../audit');
+const mpesa = require('../mpesa');
+const config = require('../config');
 const { HttpError, wrap } = require('../errors');
 const { microsToUsd } = require('../money');
 const { requireAuth, requireAdmin } = require('./auth');
@@ -128,6 +130,27 @@ router.get(
         error: o.error,
         created_at: iso(o.created_at),
       })),
+    });
+  })
+);
+
+// Where PayHero posts payment updates. The path carries a secret segment derived from
+// JWT_SECRET, so it must never ship in the customer bundle - only an authenticated admin can read
+// it, and reading it is written to the audit log. PayHero also receives this URL inside every STK
+// push request, so nothing here is required for payments to work: it exists so the number can be
+// pasted into the PayHero dashboard if that is ever asked for.
+router.get(
+  '/payhero',
+  wrap(async (req, res) => {
+    audit.record(req, 'payhero.callback_view', { detail: 'callback url viewed' });
+    res.set('Cache-Control', 'no-store');
+    res.json({
+      enabled: mpesa.enabled,
+      callback_url: mpesa.callbackUrl(),
+      callback_path: mpesa.callbackPath(),
+      channel_id: config.payhero.channelId || null,
+      account_id: config.payhero.accountId || null,
+      note: 'Give this exact URL to PayHero. It answers 200 to every POST and only credits the wallet after re-checking the payment with PayHero.',
     });
   })
 );
