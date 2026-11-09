@@ -48,7 +48,7 @@ async function test(name, fn) {
   const base = `http://127.0.0.1:${server.address().port}`;
 
   /** Minimal fetch wrapper that reports status, json and set-cookie. */
-  async function call(pathname, { method = 'GET', body, cookie, headers = {} } = {}) {
+  async function call(pathname, { method = 'GET', body, rawBody, cookie, headers = {} } = {}) {
     const res = await fetch(base + pathname, {
       method,
       headers: {
@@ -56,7 +56,7 @@ async function test(name, fn) {
         ...(cookie ? { Cookie: cookie } : {}),
         ...headers,
       },
-      body: body === undefined ? undefined : typeof body === 'string' ? body : JSON.stringify(body),
+      body: rawBody !== undefined ? rawBody : body === undefined ? undefined : typeof body === 'string' ? body : JSON.stringify(body),
       redirect: 'manual',
     });
     let data = null;
@@ -263,6 +263,46 @@ async function test(name, fn) {
     });
     assert.equal(credit.status, 404);
     assert.equal(raw.prepare('SELECT balance_cents FROM users WHERE id = ?').get(target.id).balance_cents, before);
+  });
+
+  await test('malformed JSON bodies are a 400, never a 500', async () => {
+    const res = await call('/api/auth/login', { method: 'POST', rawBody: '{"email":', headers: { 'content-type': 'application/json' } });
+    assert.equal(res.status, 400);
+    assert.match(JSON.stringify(res.data), /Invalid JSON/);
+  });
+
+  await test('a Google-only account can set a first password without one to replace', async () => {
+    const id = Number(
+      raw
+        .prepare("INSERT INTO users (email, password_hash, google_sub, password_set, created_at) VALUES ('g@panel.test','unusable','sub-123',0,?)")
+        .run(1).lastInsertRowid
+    );
+    // no password yet, so ordinary login cannot work - sign in by minting the cookie the way the
+    // Google callback does
+    const jwt = require('jsonwebtoken');
+    const config = require('../src/config');
+    const cookie = `token=${jwt.sign({ uid: id, tv: 0 }, config.jwtSecret, { algorithm: 'HS256', expiresIn: '1h' })}`;
+    const guess = await loginAs('g@panel.test', 'unusable');
+    assert.equal(guess.status, 401);
+    const set = await call('/api/auth/password', {
+      method: 'POST',
+      body: { new_password: 'first-real-password' },
+      cookie,
+    });
+    assert.equal(set.status, 200);
+    assert.equal(Number(raw.prepare('SELECT password_set FROM users WHERE id = ?').get(id).password_set), 1);
+    const after = await loginAs('g@panel.test', 'first-real-password');
+    assert.ok(after.session);
+  });
+
+  await test('a password account still needs the current password to change it', async () => {
+    const r = await loginAs(ADMIN_EMAIL, ADMIN_PASSWORD);
+    const res = await call('/api/auth/password', {
+      method: 'POST',
+      body: { new_password: 'attacker-chosen-pass' },
+      cookie: r.session,
+    });
+    assert.equal(res.status, 401);
   });
 
   await test('the M-Pesa callback ignores requests with a wrong secret', async () => {

@@ -73,9 +73,10 @@ async function loadUser(req, _res, next) {
   if (token) {
     try {
       const payload = jwt.verify(token, config.jwtSecret, { algorithms: ['HS256'] });
-      const user = await db.one('SELECT id, email, is_admin, balance_cents, token_version FROM users WHERE id = $1', [
-        payload.uid,
-      ]);
+      const user = await db.one(
+        'SELECT id, email, is_admin, balance_cents, token_version, password_set, google_sub FROM users WHERE id = $1',
+        [payload.uid]
+      );
       // token_version lets us revoke every existing session (password change, logout everywhere).
       if (user && Number(payload.tv || 0) === Number(user.token_version || 0)) req.user = user;
     } catch {
@@ -94,6 +95,8 @@ const publicUser = (u) => ({
   email: u.email,
   is_admin: Boolean(u.is_admin),
   balance_cents: u.balance_cents,
+  password_set: u.password_set === undefined ? true : Boolean(Number(u.password_set)),
+  google: Boolean(u.google_sub),
 });
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
@@ -119,11 +122,10 @@ router.post(
     const hash = await bcrypt.hash(password, 10);
     let id;
     try {
-      const inserted = await db.one('INSERT INTO users (email, password_hash, created_at) VALUES ($1,$2,$3) RETURNING id', [
-        email,
-        hash,
-        now(),
-      ]);
+      const inserted = await db.one(
+        'INSERT INTO users (email, password_hash, password_set, created_at) VALUES ($1,$2,1,$3) RETURNING id',
+        [email, hash, now()]
+      );
       id = inserted.id;
     } catch (err) {
       if (String(err.code).startsWith('SQLITE_CONSTRAINT')) {
@@ -169,17 +171,25 @@ router.post(
     assertPassword(next);
 
     const row = await db.one('SELECT * FROM users WHERE id = $1', [req.user.id]);
-    const ok = await bcrypt.compare(current.slice(0, BCRYPT_MAX_BYTES), row.password_hash);
-    if (!ok) {
-      noteFailure(`${req.ip}|${row.email}`);
-      throw new HttpError(401, 'Current password is incorrect');
-    }
-    if (await bcrypt.compare(next.slice(0, BCRYPT_MAX_BYTES), row.password_hash)) {
-      throw new HttpError(400, 'Choose a password you have not used here before');
+    // A Google-only account has no password to confirm yet; an attached Google identity is proof
+    // enough because the caller already holds that session.
+    const firstPassword = !Number(row.password_set) && Boolean(row.google_sub);
+    if (!firstPassword) {
+      const ok = await bcrypt.compare(current.slice(0, BCRYPT_MAX_BYTES), row.password_hash);
+      if (!ok) {
+        noteFailure(`${req.ip}|${row.email}`);
+        throw new HttpError(401, 'Current password is incorrect');
+      }
+      if (await bcrypt.compare(next.slice(0, BCRYPT_MAX_BYTES), row.password_hash)) {
+        throw new HttpError(400, 'Choose a password you have not used here before');
+      }
     }
 
     const hash = await bcrypt.hash(next, 10);
-    await db.run('UPDATE users SET password_hash = $1, token_version = token_version + 1 WHERE id = $2', [hash, row.id]);
+    await db.run(
+      'UPDATE users SET password_hash = $1, password_set = 1, token_version = token_version + 1 WHERE id = $2',
+      [hash, row.id]
+    );
     const fresh = await db.one('SELECT * FROM users WHERE id = $1', [row.id]);
     setSession(res, fresh); // keep the current device signed in
     res.json({ user: publicUser(fresh), message: 'Password updated. Other devices have been signed out.' });
@@ -283,14 +293,25 @@ router.get(
     if (!user) {
       const existing = await db.one('SELECT * FROM users WHERE email = $1', [email]);
       if (existing) {
-        // Link the Google identity to the existing account (same verified address).
-        await db.run('UPDATE users SET google_sub = $1 WHERE id = $2 AND (google_sub IS NULL OR google_sub = $1)', [sub, existing.id]);
+        // Linking a Google identity to an existing account is an account-recovery moment, so it
+        // also invalidates whatever password was there. Without this, anyone could pre-register
+        // a stranger's email with a password of their own and keep access after the real owner
+        // signs in with Google (classic pre-hijack).
+        const unusable = await bcrypt.hash(crypto.randomBytes(32).toString('hex'), 10);
+        await db.run(
+          `UPDATE users SET google_sub = $1,
+                            password_hash = CASE WHEN password_set = 1 THEN $2 ELSE password_hash END,
+                            password_set = 0,
+                            token_version = token_version + 1
+            WHERE id = $3 AND (google_sub IS NULL OR google_sub = $1)`,
+          [sub, unusable, existing.id]
+        );
         user = await db.one('SELECT * FROM users WHERE id = $1', [existing.id]);
       } else {
         // No usable password: sign-in happens through Google only.
         const placeholder = await bcrypt.hash(crypto.randomBytes(32).toString('hex'), 10);
         const inserted = await db.one(
-          'INSERT INTO users (email, password_hash, google_sub, created_at) VALUES ($1,$2,$3,$4) RETURNING id',
+          'INSERT INTO users (email, password_hash, google_sub, password_set, created_at) VALUES ($1,$2,$3,0,$4) RETURNING id',
           [email, placeholder, sub, now()]
         );
         user = await db.one('SELECT * FROM users WHERE id = $1', [inserted.id]);

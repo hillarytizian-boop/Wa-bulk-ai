@@ -22,6 +22,9 @@ const SCHEMA = [
       ['is_admin', 'flag', { notNull: true, default: 0 }],
       ['token_version', 'int', { notNull: true, default: 0 }],
       ['google_sub', 'text', { unique: true }],
+      // 0 means "no usable password set" (Google-only account). Used to stop account
+      // pre-hijacking: registering someone's email must not survive them signing in with Google.
+      ['password_set', 'flag', { notNull: true, default: 1 }],
       ['created_at', 'int', { notNull: true }],
     ],
   },

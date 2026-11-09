@@ -22,14 +22,12 @@ function load() {
 
 function bootFailure(res, err) {
   if (res.writableEnded) return;
+  // Details go to the platform logs, never to the browser: a stack trace on a public 500 hands
+  // an attacker file paths, dependency versions and often the config that caused the failure.
+  console.error('[server] boot_failed:', err && (err.stack || err.message));
   res.statusCode = 500;
   res.setHeader('content-type', 'application/json; charset=utf-8');
-  res.end(JSON.stringify({
-    error: 'boot_failed',
-    message: err && err.message,
-    code: err && err.code,
-    stack: String((err && err.stack) || '').split('\n').slice(0, 8),
-  }));
+  res.end(JSON.stringify({ error: 'Service unavailable', message: 'The service could not start. Please try again shortly.' }));
 }
 
 // Deliberately synchronous: Vercel's Node runtime invokes plain handler exports expecting the

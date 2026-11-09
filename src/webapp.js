@@ -48,7 +48,21 @@ function createApp() {
     })
   );
   app.use(compression());
-  app.use(express.json({ limit: '100kb' }));
+  // Vercel's runtime may hand us an already-parsed body; re-parsing a consumed stream is what
+  // turned malformed JSON into a 500 there. Parse only when the runtime left the stream alone,
+  // and answer 400 (never 500) for a body we cannot read.
+  const jsonParser = express.json({ limit: '100kb' });
+  app.use((req, res, next) => {
+    if (req.body !== undefined) return next();
+    jsonParser(req, res, (err) => {
+      if (!err) return next();
+      if (err.type === 'entity.too.large') return res.status(413).json({ error: 'Request too large' });
+      if (err.type === 'entity.parse.failed' || err instanceof SyntaxError || err.status === 400) {
+        return res.status(400).json({ error: 'Invalid JSON' });
+      }
+      return next(err);
+    });
+  });
   app.use(cookieParser());
 
   app.get('/healthz', async (_req, res) => {
@@ -141,6 +155,10 @@ function createApp() {
     // Some runtimes surface body-parser failures as a bare SyntaxError without `type`.
     if (err && (err.type === 'entity.parse.failed' || err instanceof SyntaxError)) {
       return res.status(400).json({ error: 'Invalid JSON' });
+    }
+    if (err && Number(err.status) >= 400 && Number(err.status) < 500) {
+      // Client mistakes are not incidents: say what was wrong, log nothing scary.
+      return res.status(err.status).json({ error: err.publicMessage || 'Invalid request' });
     }
     if (err && err.type === 'entity.too.large') return res.status(413).json({ error: 'Request too large' });
     if (err && err.expose && err.status) return res.status(err.status).json({ error: err.message });

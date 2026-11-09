@@ -62,6 +62,7 @@
     star: '<path d="m12 3.9 2.6 5.3 5.9.9-4.3 4.1 1 5.9-5.2-2.8-5.2 2.8 1-5.9L3.5 10.1l5.9-.9z"/>',
     chat: '<path d="M20.5 12c0 4-3.8 7.2-8.5 7.2-1 0-2-.15-2.9-.42L4.2 20.4l1.4-3.6A6.9 6.9 0 0 1 3.5 12c0-4 3.8-7.2 8.5-7.2s8.5 3.2 8.5 7.2z"/>',
     download: '<path d="M12 4.6v9.6M8.2 10.6 12 14.4l3.8-3.8M5.4 19h13.2"/>',
+    key: '<circle cx="8.6" cy="12" r="4.4"/><path d="M12.4 9.2h7.2M17.2 9.2v3.4M20.4 12.6v2.6"/>',
     flame: '<path d="M12 3.2c3.4 4.1 5.7 6.2 5.7 9.5A5.7 5.7 0 0 1 12 18.4a5.7 5.7 0 0 1-5.7-5.7c0-3.3 2.3-5.4 5.7-9.5z"/><path d="M12 18.4a2.8 2.8 0 0 0 2.8-2.8c0-1.7-1.2-2.7-2.8-4.8-1.6 2.1-2.8 3.1-2.8 4.8a2.8 2.8 0 0 0 2.8 2.8z"/>',
   };
 
@@ -144,7 +145,7 @@
   const PAGE_TITLES = {
     '': 'Dashboard', orders: 'Orders', order: 'New order', services: 'Services',
     login: 'Log in', register: 'Create account', wallet: 'Wallet', mass: 'Mass order',
-    drip: 'Drip campaigns', support: 'Support', ticket: 'Ticket', trending: 'Trending',
+    drip: 'Drip campaigns', support: 'Support', ticket: 'Ticket', trending: 'Trending', password: 'Password',
   };
 
   const pageHead = (title, sub, action) => h('div', { class: 'page-head' },
@@ -232,7 +233,7 @@
 
     // overflow menu
     const links = [['', 'Dashboard'], ['order', 'New order'], ['trending', 'Trending'], ['services', 'Pricing'], ['mass', 'Mass order']];
-    if (state.user) links.push(['orders', 'Orders'], ['wallet', 'Wallet'], ['support', 'Support']);
+    if (state.user) links.push(['orders', 'Orders'], ['wallet', 'Wallet'], ['support', 'Support'], ['password', 'Password']);
     const kids = links.map(([r, label]) => h('a', { href: `#/${r}`, class: route === r ? 'active' : '' }, label));
     kids.push(state.user
       ? h('a', { href: '#', onclick: (ev) => { ev.preventDefault(); closeMenu(); logout(); } }, 'Log out')
@@ -1071,6 +1072,53 @@
         : null);
   }
 
+  // ------------------------------------------------------------------ password
+  // Changing the password bumps token_version server-side, so every other device is signed out
+  // while this one stays logged in. A Google-only account sets its first password here.
+  function passwordView() {
+    if (!requireLogin()) return;
+    stopTimer();
+    const first = state.user.password_set === false;
+    const current = h('input', { type: 'password', autocomplete: 'current-password', placeholder: '••••••••' });
+    const next = h('input', { type: 'password', autocomplete: 'new-password', placeholder: 'At least 8 characters' });
+    const again = h('input', { type: 'password', autocomplete: 'new-password', placeholder: 'Repeat the new password' });
+    const err = h('div', { class: 'errtext' });
+    const btn = h('button', { class: 'btn block' }, first ? 'Set password' : 'Change password');
+
+    const submit = async () => {
+      err.textContent = '';
+      if (next.value.length < 8) { err.textContent = 'Password must be at least 8 characters'; return; }
+      if (next.value !== again.value) { err.textContent = 'The two passwords do not match'; return; }
+      btn.disabled = true;
+      try {
+        const { user } = await api('/auth/password', {
+          method: 'POST',
+          body: { current_password: current.value, new_password: next.value },
+        });
+        state.user = user;
+        toast(first ? 'Password set. You can now sign in with it.' : 'Password changed. Other devices were signed out.');
+        location.hash = '#/';
+      } catch (e) {
+        err.textContent = e.message;
+        btn.disabled = false;
+      }
+    };
+    btn.addEventListener('click', submit);
+    again.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+
+    fill(view,
+      pageHead(first ? 'Set a password' : 'Change password',
+        first ? 'Your account signs in with Google. Add a password so you can log in without it.'
+          : 'You will stay signed in here; every other device is signed out.'),
+      h('div', { class: 'card' },
+        first ? null : [h('label', null, 'Current password'), current],
+        h('label', null, 'New password'), next,
+        h('label', null, 'Repeat new password'), again,
+        err, btn,
+        h('p', { class: 'hint' }, 'Use at least 8 characters. This site never shows your password back to you.'),
+        h('p', { class: 'hint' }, h('a', { href: '#/wallet' }, '← Back to wallet'))));
+  }
+
   // ------------------------------------------------------------------ support
   function ticketBadge(t) {
     if (t.status !== 'open') return h('span', { class: 'badge' }, 'closed');
@@ -1214,6 +1262,7 @@
       case 'mass': return massView();
       case 'drip': return dripView();
       case 'support': return supportView();
+      case 'password': return passwordView();
       case 'wallet': return walletView();
       default:
         return fill(view, pageHead('Not found'), h('p', { class: 'muted' }, 'That page does not exist.'),
