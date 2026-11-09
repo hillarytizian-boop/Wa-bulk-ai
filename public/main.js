@@ -88,6 +88,102 @@
     return data;
   }
 
+  // ------------------------------------------------------------------ fast reads
+  // Catalogue reads are the slow part of ordering, and they change slowly. Cache them in memory
+  // (and across reloads in sessionStorage), collapse identical in-flight requests, and warm the
+  // first screens while the browser is idle. Nothing user-specific or money-related is cached.
+  const CACHE_TTL = 60 * 1000;
+  const CACHE_MAX = 80;
+  const readCache = new Map();   // path -> { at, data }
+  const inflight = new Map();    // path -> Promise
+  const svcById = new Map();     // service id -> row, so a card can open instantly
+  const svcRefreshed = new Set(); // ids already re-checked against the server this session
+  const svcAt = new Map();        // id -> when we last saw a fresh copy
+  const SS = 'hila.readcache.v1';
+
+  const cacheable = (path) => /^\/services(\?|$)/.test(path) || path === '/trending';
+
+  /** Same query, same cache slot: drop empty values and sort the keys. */
+  function normPath(path) {
+    const i = path.indexOf('?');
+    if (i < 0) return path;
+    const params = new URLSearchParams(path.slice(i + 1));
+    const entries = [...params.entries()].filter(([, v]) => v !== '' && v != null).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+    const qs = new URLSearchParams(entries).toString();
+    return qs ? `${path.slice(0, i)}?${qs}` : path.slice(0, i);
+  }
+
+  function storeInSession() {
+    try {
+      const keep = {};
+      for (const [k, v] of readCache) if (cacheable(k) && Date.now() - v.at < 5 * 60 * 1000) keep[k] = v;
+      sessionStorage.setItem(SS, JSON.stringify(keep));
+    } catch { /* quota or private mode - the memory cache still works */ }
+  }
+
+  function loadSessionCache() {
+    try {
+      const raw = sessionStorage.getItem(SS);
+      if (!raw) return;
+      for (const [k, v] of Object.entries(JSON.parse(raw))) {
+        if (v && v.at && Date.now() - v.at < 5 * 60 * 1000) { readCache.set(k, v); rememberServices(v.data); }
+      }
+    } catch { /* ignore */ }
+  }
+
+  function rememberServices(data) {
+    const at = Date.now();
+    (data.services || []).forEach((s) => { svcById.set(Number(s.id), s); svcAt.set(Number(s.id), at); });
+  }
+
+  function cacheSet(path, data) {
+    readCache.set(path, { at: Date.now(), data });
+    if (readCache.size > CACHE_MAX) readCache.delete(readCache.keys().next().value);
+    rememberServices(data);
+    storeInSession();
+  }
+
+  /**
+   * GET with a short cache. `refresh: true` ignores the cache but still updates it.
+   * Concurrent callers for the same path share one request.
+   */
+  function apiGet(rawPath, { maxAge = CACHE_TTL, refresh = false } = {}) {
+    const path = normPath(rawPath);
+    if (!refresh) {
+      const hit = readCache.get(path);
+      if (hit && Date.now() - hit.at <= maxAge) {
+        rememberServices(hit.data); // so a cached row can open its order form instantly
+        return Promise.resolve(hit.data);
+      }
+      const pending = inflight.get(path);
+      if (pending) return pending;
+    }
+    const p = api(path)
+      .then((data) => { cacheSet(path, data); inflight.delete(path); return data; })
+      .catch((err) => { inflight.delete(path); throw err; });
+    inflight.set(path, p);
+    return p;
+  }
+
+  const idle = (fn) => (window.requestIdleCallback ? window.requestIdleCallback(fn, { timeout: 1200 }) : setTimeout(fn, 200));
+
+  /** Warm the screens a customer is about to open. Cheap, silent, best-effort. */
+  function prefetchCatalog() {
+    idle(() => {
+      apiGet('/services?page=1&per_page=20').catch(() => {});
+      apiGet('/services?per_page=1').catch(() => {});       // platform tiles
+      apiGet('/trending').catch(() => {});
+    });
+  }
+
+  function prefetchService(id) {
+    const n = Number(id);
+    if (!Number.isInteger(n) || n <= 0 || svcById.has(n)) return;
+    apiGet(`/services/${n}`, { maxAge: 5 * 60 * 1000 })
+      .then((r) => { if (r && r.service) svcById.set(n, r.service); })
+      .catch(() => {});
+  }
+
   function toast(msg, isError) {
     const t = h('div', { class: `toast${isError ? ' error' : ''}` }, msg);
     document.getElementById('toasts').append(t);
@@ -145,7 +241,7 @@
   const PAGE_TITLES = {
     '': 'Dashboard', orders: 'Orders', order: 'New order', services: 'Services',
     login: 'Log in', register: 'Create account', wallet: 'Wallet', mass: 'Mass order',
-    drip: 'Drip campaigns', support: 'Support', ticket: 'Ticket', trending: 'Trending', password: 'Password',
+    drip: 'Drip campaigns', support: 'Support', ticket: 'Ticket', trending: 'Trending', password: 'Password', help: 'Help',
   };
 
   const pageHead = (title, sub, action) => h('div', { class: 'page-head' },
@@ -233,8 +329,14 @@
 
     // overflow menu
     const links = [['', 'Dashboard'], ['order', 'New order'], ['trending', 'Trending'], ['services', 'Pricing'], ['mass', 'Mass order']];
-    if (state.user) links.push(['orders', 'Orders'], ['wallet', 'Wallet'], ['support', 'Support'], ['password', 'Password']);
+    if (state.user) links.push(['orders', 'Orders'], ['wallet', 'Wallet'], ['support', 'Support'], ['help', 'Help / FAQ'], ['password', 'Password']);
+    else links.push(['help', 'Help / FAQ']);
     const kids = links.map(([r, label]) => h('a', { href: `#/${r}`, class: route === r ? 'active' : '' }, label));
+    // The support line sits in the menu itself, not buried behind a ticket form.
+    kids.push(h('a', {
+      href: whatsappHref(), class: 'wa-link', target: '_blank', rel: 'noopener noreferrer',
+      onclick: closeMenu,
+    }, svg(ICO.whatsapp, 18), `WhatsApp ${support().phone}`));
     kids.push(state.user
       ? h('a', { href: '#', onclick: (ev) => { ev.preventDefault(); closeMenu(); logout(); } }, 'Log out')
       : h('a', { href: '#/login', onclick: closeMenu }, 'Log in'));
@@ -294,6 +396,30 @@
       const { favorites } = await api('/favorites');
       state.favorites = new Set(favorites.map(Number));
     } catch { /* offline */ }
+  }
+
+  // ------------------------------------------------------------------ support contact
+  // One place for "text me on WhatsApp": the number comes from /api/meta (SUPPORT_WHATSAPP),
+  // so it can change server-side without touching this file.
+  const support = () => (state.meta && state.meta.support) || { phone: '0184355332', whatsapp: '254184355332' };
+
+  function whatsappHref(text) {
+    const s = support();
+    const body = text || 'Hi, I need help with my HilaPanel account.';
+    return `https://wa.me/${s.whatsapp}?text=${encodeURIComponent(body)}`;
+  }
+
+  function whatsappCard(opts = {}) {
+    const s = support();
+    return h('div', { class: 'card wa-card' },
+      h('div', { class: 'row', style: 'gap:12px;align-items:center' },
+        h('span', { class: 'wa-ico' }, svg(ICO.whatsapp, 24)),
+        h('div', { style: 'min-width:0' },
+          h('div', { style: 'font-weight:700' }, opts.title || 'Chat with us on WhatsApp'),
+          h('div', { class: 'muted', style: 'font-size:.86rem' }, opts.subtitle || `Fastest way to reach a human — ${s.phone}`))),
+      h('div', { class: 'row', style: 'gap:8px;margin-top:12px' },
+        h('a', { class: 'btn wa-btn', href: whatsappHref(opts.text), target: '_blank', rel: 'noopener noreferrer' }, svg(ICO.whatsapp, 18), 'Text ' + s.phone),
+        s.phone ? h('a', { class: 'btn ghost', href: `tel:${s.phone}` }, 'Call') : null));
   }
 
   const setBalance = (cents) => {
@@ -356,7 +482,7 @@
   // ------------------------------------------------------------------ catalog
   const loadServices = (params = {}) => {
     const qs = new URLSearchParams(params).toString();
-    return api(`/services${qs ? `?${qs}` : ''}`);
+    return apiGet(`/services${qs ? `?${qs}` : ''}`);
   };
 
   const serviceRow = (s) => h('div', { class: 'svc' },
@@ -442,7 +568,7 @@
   let trendingCache = null;
   async function loadTrending(force) {
     if (!force && trendingCache && Date.now() - trendingCache.at < 60000) return trendingCache.data;
-    const data = await api('/trending');
+    const data = await apiGet('/trending', { refresh: Boolean(force) });
     trendingCache = { at: Date.now(), data };
     return data;
   }
@@ -634,9 +760,28 @@
   /** Step 3 - the order form for one service. */
   async function orderFormView(params) {
     stopTimer();
-    let service;
-    try { service = (await api(`/services/${Number(params.service) || 0}`)).service; }
-    catch (e) { return fill(view, pageHead('New order'), errBox(e.message)); }
+    const sid = Number(params.service) || 0;
+    // Paint from the list the customer just tapped when we already know the service, so the form
+    // opens instantly; the authoritative price still comes from the quote endpoint below.
+    let service = svcById.get(sid) || null;
+    if (!service) {
+      try { service = (await apiGet(`/services/${sid}`, { maxAge: 5 * 60 * 1000 })).service; }
+      catch (e) { return fill(view, pageHead('New order'), errBox(e.message)); }
+      svcById.set(sid, service);
+    } else if (Date.now() - (svcAt.get(sid) || 0) > CACHE_TTL) {
+      // The copy is older than the cache window: revalidate in the background and re-render once
+      // if the price moved. A fresh copy opens the form with no request at all.
+      apiGet(`/services/${sid}`, { maxAge: 5 * 60 * 1000, refresh: true })
+        .then((r) => {
+          if (!r || !r.service) return;
+          svcById.set(sid, r.service);
+          if (Number(r.service.rate_cents) !== Number(service.rate_cents) && state.route === 'order' && !svcRefreshed.has(sid)) {
+            svcRefreshed.add(sid);
+            route();
+          }
+        })
+        .catch(() => {});
+    }
     if (stale()) return;
 
     const back = params.platform ? `#/order?platform=${encodeURIComponent(params.platform)}&sort=cheap` : '#/order';
@@ -744,6 +889,13 @@
         o.remains != null ? h('span', null, `${num(o.remains)} remaining`) : null,
         h('span', null, gen(o.created_at))),
       o.link ? h('div', { class: 'order-meta' }, safeLink(o.link)) : null,
+      groupOf(o.status) === 'attention'
+        ? h('div', { class: 'order-meta' },
+            h('a', {
+              class: 'wa-mini', target: '_blank', rel: 'noopener noreferrer',
+              href: whatsappHref(`Hi, order #${o.id} (${o.service_name}) needs help. Link: ${o.link || '-'}`),
+            }, svg(ICO.whatsapp, 14), 'Text us about #' + o.id))
+        : null,
       opts.actions ? h('div', { class: 'order-actions' },
         o.can_refill ? h('button', { class: 'btn ghost small', onclick: (ev) => opts.onAct(ev, o.id, 'refill') }, 'Refill') : null,
         o.can_cancel ? h('button', { class: 'btn ghost small', onclick: (ev) => opts.onAct(ev, o.id, 'cancel') }, 'Cancel') : null,
@@ -930,6 +1082,15 @@
   }
 
   // ------------------------------------------------------------------ auth (with Google)
+  /** Shown under the auth forms: whoever is stuck cannot get to More → Support. */
+  function authHelpLine() {
+    const s = support();
+    return h('p', { class: 'hint', style: 'text-align:center;margin-top:14px' },
+      'Trouble signing in? ',
+      h('a', { href: whatsappHref('Hi, I am having trouble signing in to HilaPanel.'), target: '_blank', rel: 'noopener noreferrer', style: 'color:#4ade80;font-weight:700' },
+        'Text ' + s.phone + ' on WhatsApp'));
+  }
+
   function googleButton() {
     const enabled = Boolean(state.meta && state.meta.googleEnabled);
     const btn = h('a', {
@@ -994,9 +1155,31 @@
         h('p', { class: 'hint' }, isLogin ? 'No account yet? ' : 'Already registered? ',
           h('a', { href: isLogin ? '#/register' : '#/login' }, isLogin ? 'Create one' : 'Log in')),
         h('p', { class: 'hint' }, h('a', { href: '#/services' }, 'Browse prices without an account →')),
+        authHelpLine(),
         state.meta && state.meta.googleEnabled
           ? null
           : h('p', { class: 'hint' }, 'Google sign-in appears once GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are set.')));
+  }
+
+  // ------------------------------------------------------------------ help
+  // Plain answers to the questions that otherwise turn into tickets, with the WhatsApp line
+  // one tap away at the bottom.
+  function helpView() {
+    stopTimer();
+    const items = [
+      ['How do I pay?', `Top up your wallet from the Wallet tab. We use M-Pesa (STK push): enter the amount, approve the prompt on your phone, and the balance appears within seconds. Minimum ${num(state.meta ? state.meta.minTopupKes : 50)} KES.`],
+      ['My order has not started. What now?', 'Most services start within minutes. If an order sits at Pending for more than an hour, open the order, tap refresh, then text us on WhatsApp with the order number — we chase the provider directly.'],
+      ['What is "remains"?', 'It is how much of the ordered quantity the provider has not delivered yet. It counts down as the order progresses. When it reaches 0 the order is complete.'],
+      ['Can I cancel or refill an order?', 'Only where the service supports it — the buttons appear on the order card when it does. Refills are free and restart delivery; cancellations return the unused portion to your wallet.'],
+      ['The link I sent is wrong.', 'Orders cannot be edited once they reach the provider. If the order has not started, request a cancel; if it has, text us and we will tell you what is possible.'],
+      ['Do prices include fees?', 'Yes. The KES price you see is what is charged to your wallet. There are no hidden add-ons at checkout.'],
+      ['I paid but my wallet is empty.', 'M-Pesa normally settles in seconds. If it has been more than five minutes, open the Wallet tab, tap the pending top-up to re-check, then text us with the M-Pesa code.'],
+      ['How do I change my password?', 'More → Password. Changing it signs out every other device. If you signed up with Google, set a password there to log in without Google too.'],
+    ];
+    fill(view,
+      pageHead('Help', 'Quick answers. Anything else, text us on WhatsApp.'),
+      h('div', { class: 'card' }, items.map(([q, a]) => h('details', { class: 'faq' }, h('summary', null, q), h('p', null, a)))),
+      whatsappCard({ title: 'Still stuck?', subtitle: `Text ${support().phone} — a human replies, not a bot.` }));
   }
 
   // ------------------------------------------------------------------ wallet
@@ -1157,9 +1340,10 @@
     });
 
     fill(view,
-      pageHead('Support', 'Open a ticket — replies appear here in the panel.'),
+      pageHead('Support', 'Text us on WhatsApp for anything urgent — tickets are for anything that needs a paper trail.'),
+      whatsappCard({ subtitle: `Any problem, any time — text ${support().phone}. Include your order ID if you have one.` }),
       h('div', { class: 'card' },
-        h('h2', null, 'New ticket'),
+        h('h2', null, 'Open a ticket'),
         h('label', null, 'Subject'), subject,
         h('label', null, 'Message'), message,
         err, btn),
@@ -1263,6 +1447,7 @@
       case 'drip': return dripView();
       case 'support': return supportView();
       case 'password': return passwordView();
+      case 'help': return helpView();
       case 'wallet': return walletView();
       default:
         return fill(view, pageHead('Not found'), h('p', { class: 'muted' }, 'That page does not exist.'),
@@ -1281,6 +1466,17 @@
     state.updateDismissed = true;
     document.getElementById('updateBanner').hidden = true;
   });
+  // A tap/hover on a service link is a reliable signal that the order form is next.
+  const maybePrefetch = (ev) => {
+    const a = ev.target && ev.target.closest && ev.target.closest('a[href*="#/order?service="]');
+    if (!a) return;
+    const m = /service=(\d+)/.exec(a.getAttribute('href') || '');
+    if (m) prefetchService(m[1]);
+  };
+  document.addEventListener('pointerover', maybePrefetch, { passive: true });
+  document.addEventListener('touchstart', maybePrefetch, { passive: true });
+  document.addEventListener('focusin', maybePrefetch);
+
   document.addEventListener('click', (ev) => {
     if (popoverEl && !popoverEl.contains(ev.target)) closePopover();
     if (!menuEl().hidden && !menuEl().contains(ev.target) && ev.target.closest('#menuBtn') === null) closeMenu();
@@ -1296,6 +1492,8 @@
     }
     state.build = state.meta.build;
     try { const { user } = await api('/auth/me'); state.user = user; } catch { /* logged out */ }
+    loadSessionCache();
+    prefetchCatalog();
     await loadFavorites();
     renderChrome();
     route();

@@ -24,6 +24,11 @@ module.exports = {
   isProd,
   port,
   siteName: process.env.SITE_NAME || 'SMM Panel',
+  // Where customers reach a human. Digits only, international format for the wa.me link.
+  support: {
+    phone: process.env.SUPPORT_PHONE || '0184355332',
+    whatsapp: (process.env.SUPPORT_WHATSAPP || '254184355332').replace(/\D/g, ''),
+  },
   publicUrl: (process.env.PUBLIC_URL || `http://localhost:${port}`).replace(/\/$/, ''),
   trustProxy: bool(process.env.TRUST_PROXY, false),
   cookieSecure: bool(process.env.COOKIE_SECURE, false),

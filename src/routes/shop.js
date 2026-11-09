@@ -34,6 +34,12 @@ router.get('/meta', (_req, res) => {
     // changes on every deploy; the SPA polls /meta to offer "an app update is ready"
     build: process.env.VERCEL_GIT_COMMIT_SHA || process.env.VERCEL_DEPLOYMENT_ID || 'dev',
     fields: FIELD_META,
+    // "text me on WhatsApp" - the number lives in config so it can change without a redeploy
+    support: {
+      phone: config.support.phone,
+      whatsapp: config.support.whatsapp,
+      whatsappUrl: config.support.whatsapp ? `https://wa.me/${config.support.whatsapp}` : null,
+    },
   });
 });
 

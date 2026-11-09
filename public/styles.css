@@ -464,3 +464,23 @@ tbody tr:last-child td { border-bottom: none; }
 .admin-main .card { margin: 0; }
 .admin-main .card h2 { margin-bottom: 10px; }
 .admin-main .err { color: #ffb4b4; }
+
+/* WhatsApp support line — the fastest route to a human */
+.wa-card { border-color: rgba(37, 211, 102, .35); background: linear-gradient(180deg, rgba(37,211,102,.10), rgba(37,211,102,.03)); }
+.wa-ico { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 44px; width: 44px; height: 44px;
+  border-radius: 14px; color: #25d366; background: rgba(37,211,102,.14); border: 1px solid rgba(37,211,102,.3); }
+.wa-btn { background: #25d366; color: #05230f; }
+.wa-btn svg { flex: 0 0 18px; }
+.wa-link { display: flex !important; align-items: center; gap: 9px; color: #4ade80 !important; font-weight: 700; }
+.wa-link svg { flex: 0 0 18px; }
+.wa-mini { display: inline-flex; align-items: center; gap: 6px; color: #4ade80; font-size: .8rem; font-weight: 600; text-decoration: none; }
+.wa-mini:hover { text-decoration: underline; }
+
+/* Help / FAQ */
+.faq { border-bottom: 1px solid var(--line); padding: 12px 0; }
+.faq:last-child { border-bottom: 0; }
+.faq summary { cursor: pointer; font-weight: 650; list-style: none; display: flex; justify-content: space-between; gap: 12px; }
+.faq summary::-webkit-details-marker { display: none; }
+.faq summary::after { content: '+'; color: var(--muted); font-weight: 700; }
+.faq[open] summary::after { content: '–'; }
+.faq p { margin: 8px 0 0; color: var(--muted); font-size: .9rem; line-height: 1.5; }
