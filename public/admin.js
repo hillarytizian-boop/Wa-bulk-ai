@@ -142,6 +142,28 @@
 
     // ---- PayHero callback URL (admin-only; the path segment is a derived secret)
     const callbackBox = h('div', null, skeletons(1));
+    const payheroBox = h('div', null, skeletons(2));
+    const runPayheroCheck = async () => {
+      fill(payheroBox, skeletons(2));
+      try {
+        const d = await api('/admin/payhero/diagnose');
+        const ok = d.probe && d.probe.ok && d.probe.channel_matches_env !== false;
+        const seen = d.probe && d.probe.channel_seen;
+        fill(payheroBox,
+          h('p', { class: ok ? 'hint' : 'errtext' },
+            ok
+              ? `Connected. API key used: ${d.config.auth_source} · channel ${seen ? seen.id : '—'} (till ${seen ? seen.short_code : '—'}, account ${seen ? seen.account_id : '—'}).`
+              : `Problem: ${(d.probe && (d.probe.provider_message || `HTTP ${d.probe.http_status}`)) || 'no response'}. ` +
+                `Configured channel ${d.config.channel_id}, PayHero reports ${seen ? seen.id : 'none'} — the API key and the channel id must belong to the same account.`),
+          h('div', { class: 'row', style: 'gap:8px;margin-top:8px' }, btn));
+      } catch (err) {
+        fill(payheroBox, h('p', { class: 'errtext' }, err.message), h('div', { class: 'row', style: 'gap:8px;margin-top:8px' }, btn));
+      }
+    };
+    const btn = h('button', { class: 'btn ghost small' }, 'Run connection check');
+    btn.addEventListener('click', () => { btn.disabled = true; runPayheroCheck().finally(() => { btn.disabled = false; }); });
+    runPayheroCheck();
+
     api('/admin/payhero')
       .then((p) => {
         const field = h('input', { type: 'text', readonly: true, value: p.callback_url });
@@ -172,6 +194,10 @@
         h('div', { class: 'stat' }, h('div', { class: 'k' }, 'Profit'), h('div', { class: 'v' }, kes(stats.profit_cents))),
         h('div', { class: 'stat' }, h('div', { class: 'k' }, 'Provider balance'),
           h('div', { class: 'v' }, provider.error ? '—' : `$${Number(provider.balance_usd || 0).toFixed(2)}`))),
+      h('div', { class: 'card' },
+        h('h2', null, 'PayHero connection'),
+        h('p', { class: 'hint' }, 'Deposits fail with "Could not start the M-Pesa prompt" when the API key and the channel id belong to different PayHero accounts. Run this check after changing either.'),
+        payheroBox),
       h('div', { class: 'card' },
         h('h2', null, 'PayHero payment callback'),
         h('p', { class: 'hint' }, 'Paste this exact URL into PayHero if it ever asks where to send payment updates. Every STK push already carries it, so payments work without this.'),
