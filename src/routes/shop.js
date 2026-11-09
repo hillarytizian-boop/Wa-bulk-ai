@@ -5,6 +5,7 @@ const config = require('../config');
 const platforms = require('../platforms');
 const catalog = require('../catalog');
 const pricing = require('../pricing');
+const recommend = require('../recommend');
 const orders = require('../orders');
 const mpesa = require('../mpesa');
 const { HttpError, wrap } = require('../errors');
@@ -120,6 +121,28 @@ router.get(
       sort,
       pagination: { page, per_page: perPage, total, pages },
     });
+  })
+);
+
+// Paste-a-link advice. POST (not GET) so the customer's link never lands in a URL, an access
+// log or a Referer header.
+router.post(
+  '/recommend',
+  wrap(async (req, res) => {
+    const link = String((req.body && req.body.link) || '').trim().slice(0, 500);
+    const quantity = Number(req.body && req.body.quantity) || 0;
+    const goal = String((req.body && req.body.goal) || '').toLowerCase().slice(0, 20);
+    const sort = String((req.body && req.body.sort) || '').toLowerCase().slice(0, 10);
+    let c;
+    try {
+      c = await catalog.load();
+    } catch (err) {
+      console.error('[recommend] catalog unavailable:', err.message);
+      throw new HttpError(503, 'Services are temporarily unavailable. Please try again shortly.');
+    }
+    const out = recommend.recommend(link, c.list, pricing.getSettings(), { quantity, goal, sort, limit: 3 });
+    res.set('Cache-Control', 'no-store');
+    res.json(out);
   })
 );
 

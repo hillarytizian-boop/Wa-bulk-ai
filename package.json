@@ -7,7 +7,7 @@
     "start": "node src/main.js",
     "dev": "node --watch src/main.js",
     "mock": "node test/mock-provider.js",
-    "test": "node test/engine.test.js && node test/security.test.js",
+    "test": "node test/recommend.test.js && node test/engine.test.js && node test/security.test.js",
     "admin:password": "node scripts/set-admin-password.js",
     "migrate": "node scripts/migrate.js"
   },

@@ -484,3 +484,34 @@ tbody tr:last-child td { border-bottom: none; }
 .faq summary::after { content: '+'; color: var(--muted); font-weight: 700; }
 .faq[open] summary::after { content: '–'; }
 .faq p { margin: 8px 0 0; color: var(--muted); font-size: .9rem; line-height: 1.5; }
+
+/* Paste-a-link finder (home screen) */
+.finder-head h2 { margin: 0 0 2px; }
+.finder-bar { display: flex; gap: 8px; margin-top: 12px; }
+.finder-bar input { flex: 1; min-width: 0; }
+.finder-out { margin-top: 14px; }
+.finder-platform { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+.finder-note { color: var(--muted); font-size: .86rem; margin: 6px 0 12px; }
+.finder-list { display: grid; gap: 8px; }
+.finder-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--line);
+  border-radius: 14px; background: var(--surface-2); }
+.finder-row.best { border-color: rgba(62,224,123,.45); background: linear-gradient(180deg, rgba(62,224,123,.10), rgba(62,224,123,.02)); }
+.finder-rank { flex: 0 0 auto; font-size: .62rem; font-weight: 800; letter-spacing: .08em; color: var(--muted);
+  border: 1px solid var(--line); border-radius: 8px; padding: 4px 7px; }
+.finder-row.best .finder-rank { color: #06240f; background: #3ee07b; border-color: transparent; }
+.finder-name { font-weight: 650; font-size: .92rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.finder-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px; }
+.finder-tags .chip { font-size: .68rem; padding: 2px 7px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+.finder-tags .chip.dim { opacity: .7; }
+.finder-side { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; }
+.finder-alts { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* goal switcher inside the finder */
+.finder-goals { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 2px; }
+.finder-goals[hidden] { display: none; }
+.chip-btn { font: inherit; font-size: .78rem; font-weight: 600; padding: 6px 12px; border-radius: 999px;
+  background: transparent; color: var(--muted); border: 1px solid var(--line); cursor: pointer; }
+.chip-btn:hover { color: var(--text); border-color: var(--muted); }
+.chip-btn.active { background: var(--brand); color: var(--brand-ink); border-color: transparent; }
+.chip-btn.inferred { border-color: var(--brand); color: var(--text); }
+.finder-sep { width: 1px; align-self: stretch; background: var(--line); margin: 2px 4px; }

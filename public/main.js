@@ -428,6 +428,133 @@
     renderChrome();
   };
 
+  // ------------------------------------------------------------------ link finder
+  // "Paste your link and we tell you the cheapest service that works." The inference and the
+  // ranking both happen server-side (POST /api/recommend) so nothing here can be talked into
+  // showing a provider rate: the endpoint only ever returns customer-facing KES.
+  function linkFinder() {
+    const input = h('input', {
+      type: 'url', inputmode: 'url', autocomplete: 'off', spellcheck: 'false',
+      placeholder: 'https://instagram.com/yourprofile',
+      'aria-label': 'Your link',
+    });
+    const btn = h('button', { class: 'btn' }, 'Find cheapest');
+    const out = h('div', { class: 'finder-out' });
+    const goalRow = h('div', { class: 'finder-goals' });
+    let seq = 0;
+    let timer = null;
+    let goal = ''; // '' = let the server infer it from the link
+    let sort = 'value'; // 'value' = score (price + guarantees), 'price' = cheapest first
+
+    const chip = (label, tone) => h('span', { class: `chip ${tone || ''}` }, label);
+
+    const priceLabel = (r) => (r.flat ? `${amt(r.per1000_cents)} / package` : `${amt(r.per1000_cents)} / 1000`);
+
+    // Goal switcher: "auto" lets the URL decide, the rest are explicit.
+    function renderGoals(data) {
+      const goals = [{ key: '', label: 'Auto' }].concat(data.goals || []);
+      fill(goalRow,
+        goals.map((g) => h('button', {
+          class: `chip-btn${goal === g.key ? ' active' : ''}${data.goal === g.key && g.key ? ' inferred' : ''}`,
+          type: 'button',
+          onclick: () => { goal = g.key; run(); },
+        }, g.label)),
+        h('span', { class: 'finder-sep' }),
+        h('button', {
+          class: `chip-btn${sort === 'value' ? ' active' : ''}`, type: 'button',
+          onclick: () => { sort = 'value'; run(); },
+        }, 'Best value'),
+        h('button', {
+          class: `chip-btn${sort === 'price' ? ' active' : ''}`, type: 'button',
+          onclick: () => { sort = 'price'; run(); },
+        }, 'Cheapest first'));
+      goalRow.hidden = false;
+    }
+
+    function renderResult(data) {
+      if (data.sort) sort = data.sort;
+      renderGoals(data);
+      const kids = [];
+      if (data.platform) {
+        kids.push(h('div', { class: 'finder-platform' },
+          h('span', { class: 'plat-ico', style: `color:${data.platform.color};border-color:${data.platform.color}55;background:${data.platform.color}1f` }, abbr(data.platform.name)),
+          h('div', { style: 'min-width:0' },
+            h('div', { style: 'font-weight:700' }, data.platform.name),
+            h('div', { class: 'muted', style: 'font-size:.8rem' },
+              data.host ? `${data.host} · ${num(data.platform.count)} services` : `${num(data.platform.count)} services`))));
+      }
+      kids.push(h('p', { class: 'finder-note' }, data.note));
+
+      if (data.services.length) {
+        kids.push(h('div', { class: 'finder-list' }, data.services.map((r, i) => h('div', { class: `finder-row${i === 0 ? ' best' : ''}` },
+          h('div', { class: 'finder-rank' }, i === 0 ? 'BEST' : String(i + 1)),
+          h('div', { style: 'min-width:0;flex:1' },
+            h('div', { class: 'finder-name' }, r.name),
+            h('div', { class: 'finder-tags' },
+              (r.reasons || []).map((x) => chip(x)),
+              r.min ? chip(`min ${num(r.min)}`, 'dim') : null,
+              r.max ? chip(`max ${num(r.max)}`, 'dim') : null)),
+          h('div', { class: 'finder-side' },
+            h('span', { class: 'price' }, priceLabel(r)),
+            h('a', {
+              class: 'btn small',
+              href: `#/order?service=${r.id}&platform=${encodeURIComponent((data.platform && data.platform.key) || '')}`,
+            }, 'Order'))))));
+        kids.push(h('a', {
+          class: 'btn ghost small', style: 'margin-top:10px',
+          href: `#/order?platform=${encodeURIComponent(data.platform.key)}&sort=cheap`,
+        }, `All cheap ${data.platform.name} services →`));
+      } else if (data.alternatives.length) {
+        // Could not tell the platform: let them pick instead of guessing wrong.
+        kids.push(h('div', { class: 'finder-alts' }, data.alternatives.map((p) => h('a', {
+          class: 'btn ghost small', href: `#/order?platform=${encodeURIComponent(p.key)}&sort=cheap`,
+        }, p.name))));
+      }
+      fill(out, ...kids);
+      out.hidden = false;
+    }
+
+    async function run() {
+      const link = input.value.trim();
+      if (!link) { input.focus(); return; }
+      const mine = ++seq;
+      out.hidden = false;
+      fill(out, h('div', { class: 'finder-note' }, 'Checking the catalogue…'));
+      btn.disabled = true;
+      try {
+        const data = await api('/recommend', { method: 'POST', body: { link, goal, sort } });
+        if (mine !== seq) return;
+        renderResult(data);
+        // The result is about one platform; keep the catalogue warm for the natural next tap.
+        if (data.platform) apiGet(`/services?platform=${data.platform.key}&sort=cheap&page=1&per_page=20`).catch(() => {});
+      } catch (e) {
+        if (mine !== seq) return;
+        fill(out, errBox(e.message));
+      } finally {
+        if (mine === seq) btn.disabled = false;
+      }
+    }
+
+    btn.addEventListener('click', run);
+    input.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); run(); } });
+    // Typing a link and waiting is the same intent as pasting one: answer without a second tap.
+    input.addEventListener('input', () => {
+      clearTimeout(timer);
+      const v = input.value.trim();
+      if (v.length < 6 || !/[.\/]/.test(v)) return;
+      timer = setTimeout(() => { if (document.body.contains(input)) run(); }, 700);
+    });
+
+    return h('div', { class: 'card finder' },
+      h('div', { class: 'finder-head' },
+        h('h2', null, 'Paste a link — get the cheapest service'),
+        h('p', { class: 'muted', style: 'margin:2px 0 0;font-size:.85rem' },
+          'We read the platform from your link, then rank its services by price, refill cover and start speed.')),
+      h('div', { class: 'finder-bar' }, input, btn),
+      goalRow,
+      out);
+  }
+
   // ------------------------------------------------------------------ dashboard
   async function dashboardView() {
     stopTimer();
@@ -442,6 +569,8 @@
       h('div', { class: 'row', style: 'gap:10px;margin-bottom:16px' },
         h('a', { class: 'btn', href: state.user ? '#/order' : '#/login' }, state.user ? 'New order' : 'Get started'),
         h('a', { class: 'btn ghost', href: '#/trending' }, 'What\'s trending')),
+      linkFinder(),
+
       h('div', { class: 'row', style: 'justify-content:flex-end;margin-bottom:16px' }, pill),
 
       h('div', { class: 'card' },
