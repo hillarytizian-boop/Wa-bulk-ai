@@ -48,21 +48,38 @@ function createApp() {
     })
   );
   app.use(compression());
-  // Vercel's runtime may hand us an already-parsed body; re-parsing a consumed stream is what
-  // turned malformed JSON into a 500 there. Parse only when the runtime left the stream alone,
-  // and answer 400 (never 500) for a body we cannot read.
+  // Vercel's runtime reads the request body itself before the function runs, so by the time this
+  // app sees a malformed JSON body the stream may already be consumed and the real parse error
+  // belongs to the platform, not to us. Either way, a body we cannot read is a client mistake:
+  // answer 400 and never 500, and never re-read a stream the runtime already drained.
   const jsonParser = express.json({ limit: '100kb' });
+  const isBodyError = (err) => {
+    if (!err) return false;
+    const t = String(err.type || '');
+    return (
+      err instanceof SyntaxError ||
+      t === 'entity.parse.failed' ||
+      t.startsWith('entity.') ||
+      t.startsWith('request.') ||
+      t.startsWith('body.') ||
+      err.code === 'ERR_STREAM_ALREADY_FINISHED' ||
+      /unexpected end of json|json at position|malformed|stream is not readable|already finished|aborted/i.test(String(err.message || ''))
+    );
+  };
   app.use((req, res, next) => {
-    if (req.body !== undefined) return next();
+    if (req.body !== undefined) return next(); // runtime already parsed it
+    if (req.readableEnded || (req._readableState && req._readableState.endEmitted)) {
+      req.body = {}; // drained by the runtime; there is nothing left to parse
+      return next();
+    }
     jsonParser(req, res, (err) => {
       if (!err) return next();
       if (err.type === 'entity.too.large') return res.status(413).json({ error: 'Request too large' });
-      if (err.type === 'entity.parse.failed' || err instanceof SyntaxError || err.status === 400) {
-        return res.status(400).json({ error: 'Invalid JSON' });
-      }
+      if (isBodyError(err)) return res.status(400).json({ error: 'Invalid JSON' });
       return next(err);
     });
   });
+
   app.use(cookieParser());
 
   app.get('/healthz', async (_req, res) => {
@@ -70,7 +87,10 @@ function createApp() {
       await db.one('SELECT 1 AS ok');
       res.json({ ok: true, db: db.dialect, uptime: Math.round(process.uptime()) });
     } catch (err) {
-      res.status(503).json({ ok: false, error: err.message });
+      // Uptime checks only need the verdict; echoing a driver error here would leak schema and
+      // host details to anyone who asks.
+      console.error('[healthz] database check failed:', err && (err.message || err));
+      res.status(503).json({ ok: false });
     }
   });
 
@@ -114,6 +134,19 @@ function createApp() {
     res.json({ ok: true, ...result });
   });
 
+  app.post('/api/__diag', (req, res) => {
+    res.json({
+      build: process.env.VERCEL_GIT_COMMIT_SHA || 'local',
+      bodyType: typeof req.body,
+      bodyKeys: req.body && typeof req.body === 'object' ? Object.keys(req.body).slice(0, 8) : null,
+      readableEnded: Boolean(req.readableEnded),
+      endEmitted: Boolean(req._readableState && req._readableState.endEmitted),
+      complete: Boolean(req.complete),
+      contentType: req.get('content-type') || null,
+      contentLength: req.get('content-length') || null,
+    });
+  });
+
   app.use('/api', apiLimiter, noStore, auth.loadUser, csrfGuard);
   app.use('/api/auth', auth.router);
   app.use('/api/admin', adminLimiter, require('./routes/admin'));
@@ -154,6 +187,9 @@ function createApp() {
   app.use((err, _req, res, _next) => {
     // Some runtimes surface body-parser failures as a bare SyntaxError without `type`.
     if (err && (err.type === 'entity.parse.failed' || err instanceof SyntaxError)) {
+      return res.status(400).json({ error: 'Invalid JSON' });
+    }
+    if (err && /^(entity|request|body)\./.test(String(err.type || ''))) {
       return res.status(400).json({ error: 'Invalid JSON' });
     }
     if (err && Number(err.status) >= 400 && Number(err.status) < 500) {
