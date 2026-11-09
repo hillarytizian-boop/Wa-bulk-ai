@@ -50,9 +50,9 @@ module.exports = {
 
   // Defaults only: the live values live in the `settings` table and are editable in the admin panel.
   pricing: {
-    markup: num(process.env.DEFAULT_MARKUP, 0.3),
-    kesPerUsd: num(process.env.KES_PER_USD, 129),
-    feeKes: num(process.env.FEE_KES, 110),
+    markup: num(process.env.DEFAULT_MARKUP, 0),
+    kesPerUsd: num(process.env.KES_PER_USD, 129.980973),
+    feeKes: num(process.env.FEE_KES, 60),
   },
 
   minTopupKes: num(process.env.MIN_TOPUP_KES, 50),
