@@ -431,6 +431,41 @@ async function test(name, fn) {
     assert.equal(after, owner.balance_cents + 12000); // KES 120, not the KES 500 asked for
   });
 
+  await test('cron fails closed when no CRON_SECRET is configured', async () => {
+    const saved = process.env.CRON_SECRET;
+    delete process.env.CRON_SECRET;
+    const open = await call('/api/cron/tick');
+    assert.equal(open.status, 503); // never runs the sweep for an anonymous caller
+
+    process.env.CRON_SECRET = 'cron-secret-for-tests';
+    const anon = await call('/api/cron/tick');
+    assert.equal(anon.status, 401);
+    const wrong = await call('/api/cron/tick', { headers: { Authorization: 'Bearer nope' } });
+    assert.equal(wrong.status, 401);
+    const right = await call('/api/cron/tick', { headers: { Authorization: 'Bearer cron-secret-for-tests' } });
+    assert.equal(right.status, 200);
+    if (saved === undefined) delete process.env.CRON_SECRET;
+    else process.env.CRON_SECRET = saved;
+  });
+
+  await test('client errors keep their own message instead of a blanket "Invalid request"', async () => {
+    const login = await call('/api/auth/login', { method: 'POST', body: { email: ADMIN_EMAIL, password: 'definitely-wrong' } });
+    assert.equal(login.status, 401);
+    assert.equal(login.data.error, 'Incorrect email or password'); // not "Invalid request"
+
+    const session = (await loginAs(ADMIN_EMAIL, ADMIN_PASSWORD)).session;
+    // A validation error from our own code, not a provider failure (those stay generic on purpose).
+    const bad = await call('/api/wallet/topup', {
+      method: 'POST',
+      cookie: session,
+      body: { phone: '0712345678', amount_kes: 1 },
+    });
+    assert.equal(bad.status, 400);
+    assert.match(String(bad.data.error), /whole number between KES/i);
+    // Provider errors must stay opaque: the provider's own text never reaches the browser.
+    assert.doesNotMatch(String(bad.data.error), /provider-secret-key-do-not-leak/);
+  });
+
   await test('the API hides itself: noindex header, robots.txt, bare 404s, no stack traces', async () => {
     const list = await call('/api/definitely-not-a-route');
     assert.equal(list.status, 404);

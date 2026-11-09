@@ -270,11 +270,15 @@ router.get(
     const settings = pricing.getSettings();
     const def = getTypeDef(s.type);
     const rawQty = Number(req.query.quantity);
-    const quantity = Number.isFinite(rawQty) && rawQty > 0 ? Math.floor(rawQty) : def.flat ? 1 : 0;
+    // Same rules the order endpoint enforces, so the quote can never advertise a price the server
+    // would refuse (it used to answer price 0, problem null, for a negative quantity).
+    const usableQty = Number.isInteger(rawQty) && rawQty > 0;
+    const quantity = usableQty ? rawQty : def.flat ? 1 : 0;
     let priceCents = pricing.priceCents(s, quantity, settings);
     let problem = null;
-    if (!def.flat && quantity > 0) {
-      if (s.min && quantity < s.min) problem = `Minimum quantity is ${s.min}`;
+    if (!def.flat) {
+      if (!usableQty) problem = 'Enter a whole number quantity';
+      else if (s.min && quantity < s.min) problem = `Minimum quantity is ${s.min}`;
       else if (s.max && quantity > s.max) problem = `Maximum quantity is ${s.max}`;
     }
     if (problem) priceCents = 0;

@@ -130,17 +130,21 @@ function createApp() {
     }
   });
 
-  // Cron entry point: Vercel Cron calls this (Authorization: Bearer $CRON_SECRET).
+  // Cron entry point: Vercel Cron calls this with `Authorization: Bearer $CRON_SECRET`.
+  // FAIL CLOSED: with no secret configured this used to run the whole job sweep for anyone who
+  // asked, which let a stranger drive provider polling and DB writes on demand.
   app.get('/api/cron/tick', async (req, res) => {
     const secret = process.env.CRON_SECRET;
-    if (secret) {
-      const header = String(req.get('authorization') || '');
-      const token = header.startsWith('Bearer ') ? header.slice(7) : String(req.query.token || '');
-      const crypto = require('crypto');
-      const a = Buffer.from(token);
-      const b = Buffer.from(secret);
-      if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return res.status(401).json({ error: 'Unauthorized' });
+    if (!secret) {
+      console.error('[cron] CRON_SECRET is not configured - refusing to run the sweep');
+      return res.status(503).json({ error: 'Cron is not configured' });
     }
+    const header = String(req.get('authorization') || '');
+    const token = header.startsWith('Bearer ') ? header.slice(7) : String(req.query.token || '');
+    const crypto = require('crypto');
+    const a = Buffer.from(token);
+    const b = Buffer.from(secret);
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return res.status(401).json({ error: 'Unauthorized' });
     const result = await jobs.tick({ log: console.log });
     res.json({ ok: true, ...result });
   });
@@ -195,7 +199,11 @@ function createApp() {
     }
     if (err && Number(err.status) >= 400 && Number(err.status) < 500) {
       // Client mistakes are not incidents: say what was wrong, log nothing scary.
-      return res.status(err.status).json({ error: err.publicMessage || 'Invalid request' });
+      // HttpError carries its text in `message` (with expose=true); without this fallback every
+      // validation error - "Insufficient wallet balance", "Minimum quantity is 100" - reached the
+      // customer as the useless "Invalid request".
+      const message = err.publicMessage || (err.expose && err.message ? err.message : null) || 'Invalid request';
+      return res.status(err.status).json({ error: message });
     }
     if (err && err.type === 'entity.too.large') return res.status(413).json({ error: 'Request too large' });
     if (err && err.expose && err.status) return res.status(err.status).json({ error: err.message });

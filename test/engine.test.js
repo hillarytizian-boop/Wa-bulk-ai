@@ -257,6 +257,16 @@ async function test(name, fn) {
     assert.equal(balance(), before + 50000);
   });
 
+  await test('order validation refuses a negative or oversized quantity with a readable message', async () => {
+    await assert.rejects(() => orders.placeOrder(1, { service: 1, link: 'https://instagram.com/p/x', quantity: -5 }), /whole number quantity/i);
+    await assert.rejects(() => orders.placeOrder(1, { service: 1, link: 'https://instagram.com/p/x', quantity: 999999 }), /Maximum quantity/i);
+    // The price a client sends is ignored: the order is charged at the server's own price.
+    const before = raw.prepare('SELECT balance_cents FROM users WHERE id = 1').get().balance_cents;
+    const placed = await orders.placeOrder(1, { service: 1, link: 'https://instagram.com/p/x', quantity: 50, price_cents: 1 });
+    assert.ok(Number(placed.price_cents) > 100, `charged ${placed.price_cents}, not the 1 cent sent`);
+    assert.equal(raw.prepare('SELECT balance_cents FROM users WHERE id = 1').get().balance_cents, before - Number(placed.price_cents));
+  });
+
   await test('M-Pesa: a short payment credits only what M-Pesa collected', async () => {
     const { id, providerRef } = await createTopup(500);
     const before = balance();
