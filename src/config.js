@@ -52,7 +52,7 @@ module.exports = {
   pricing: {
     markup: num(process.env.DEFAULT_MARKUP, 0.3),
     kesPerUsd: num(process.env.KES_PER_USD, 129),
-    feeKes: num(process.env.FEE_KES, 50),
+    feeKes: num(process.env.FEE_KES, 110),
   },
 
   minTopupKes: num(process.env.MIN_TOPUP_KES, 50),

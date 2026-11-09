@@ -21,7 +21,11 @@ const DEFAULTS = {
 };
 
 let cache = null; // { markup, kesPerUsd, feeKes, feeCents }
+let cacheAt = 0;
 let loading = null;
+// Settings are re-read once a minute, so a price change made in the admin console (or straight in
+// the database) reaches every warm lambda without waiting for a redeploy.
+const TTL_MS = 60 * 1000;
 
 function toSettings(values) {
   const markup = Number.isFinite(values.markup) && values.markup >= 0 ? values.markup : DEFAULTS.markup;
@@ -42,13 +46,30 @@ async function initSettings() {
     if (Number.isFinite(n)) map[row.key] = n;
   }
   cache = toSettings(map);
+  cacheAt = Date.now();
   return cache;
 }
 
-/** Memoised initialisation for request handlers. */
+/**
+ * Initialisation for request handlers, with a one-minute TTL. A failed refresh never takes the
+ * site down: the last good values keep serving and the error goes to the log.
+ */
 function ensureSettings() {
-  if (cache) return Promise.resolve(cache);
-  if (!loading) loading = initSettings().finally(() => { loading = null; });
+  if (cache && Date.now() - cacheAt < TTL_MS) return Promise.resolve(cache);
+  if (!loading) {
+    loading = initSettings()
+      .catch((err) => {
+        if (cache) {
+          console.error('[pricing] settings refresh failed, keeping cached values:', err.message);
+          cacheAt = Date.now(); // do not retry on every request while the database is unhappy
+          return cache;
+        }
+        throw err;
+      })
+      .finally(() => {
+        loading = null;
+      });
+  }
   return loading;
 }
 
