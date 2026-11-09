@@ -155,6 +155,23 @@ router.get(
   })
 );
 
+// Live check of the PayHero connection: which credential path is loaded and what PayHero answers.
+// Lengths and status codes only - no secret ever leaves the server.
+router.get(
+  '/payhero/diagnose',
+  wrap(async (req, res) => {
+    audit.record(req, 'payhero.diagnose', { detail: 'connection probe' });
+    let probe;
+    try {
+      probe = await mpesa.probe();
+    } catch (err) {
+      probe = { ok: false, error: err.message }; // network/timeout, not an auth verdict
+    }
+    res.set('Cache-Control', 'no-store');
+    res.json({ config: mpesa.diagnose(), probe });
+  })
+);
+
 // Retry an unconfirmed order. Safe: it reuses the same idempotency key.
 router.post(
   '/orders/:id/retry',

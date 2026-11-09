@@ -111,6 +111,41 @@ async function queryStatus({ providerRef, checkoutRequestId }) {
   };
 }
 
+/**
+ * Admin diagnostics: which credential path is actually in use, and what PayHero answers right now.
+ * Lengths only - never the values - so the console can tell "env var missing" from "wrong password"
+ * without ever shipping the secret to a browser.
+ */
+function diagnose() {
+  const user = process.env.PAYHERO_API_USERNAME || '';
+  const pass = process.env.PAYHERO_API_PASSWORD || '';
+  const basic = process.env.PAYHERO_BASIC_AUTH || '';
+  return {
+    enabled: ph.enabled,
+    base_url: ph.baseUrl,
+    channel_id: ph.channelId || null,
+    account_id: ph.accountId || null,
+    auth_source: basic ? 'PAYHERO_BASIC_AUTH' : user && pass ? 'PAYHERO_API_USERNAME+PASSWORD' : 'none',
+    username_len: user.length,
+    password_len: pass.length,
+    basic_len: (ph.basicAuth || '').length,
+  };
+}
+
+/** One authenticated read against PayHero, with only the harmless parts of the reply. */
+async function probe() {
+  const { ok, status, data } = await call('/api/v2/payment_channels');
+  const pick = (k) => (data && typeof data === 'object' && data[k] !== undefined ? String(data[k]).slice(0, 140) : null);
+  const channel = data && Array.isArray(data.payment_channels) ? data.payment_channels[0] : null;
+  return {
+    ok,
+    http_status: status,
+    provider_message: pick('message') || pick('error') || pick('detail'),
+    channel_seen: channel ? { id: channel.id, short_code: channel.short_code, account_id: channel.account_id, is_active: channel.is_active } : null,
+    channel_matches_env: channel ? Number(channel.id) === Number(ph.channelId) : null,
+  };
+}
+
 /** His wallet balance at PayHero (service wallet). Used by the admin console. */
 async function providerBalance() {
   const { ok, data } = await call('/api/v2/wallets');
@@ -239,6 +274,8 @@ module.exports = {
   stkPush,
   queryStatus,
   providerBalance,
+  diagnose,
+  probe,
   reconcileTopup,
   reconcilePending,
   parseCallback,

@@ -48,6 +48,9 @@ async function test(name, fn) {
         })
       );
     }
+    if (u.pathname === '/api/v2/payment_channels') {
+      return res.end(JSON.stringify({ payment_channels: [{ id: 133, short_code: '000000', account_id: 10807, is_active: true }] }));
+    }
     res.statusCode = 404;
     res.end('{}');
   });
@@ -429,6 +432,25 @@ async function test(name, fn) {
     await waitFor(() => raw.prepare("SELECT status FROM topups WHERE checkout_request_id = 'ws_CO_test_1b'").get().status === 'paid');
     const after = raw.prepare('SELECT balance_cents FROM users WHERE id = ?').get(owner.id).balance_cents;
     assert.equal(after, owner.balance_cents + 12000); // KES 120, not the KES 500 asked for
+  });
+
+  await test('the PayHero diagnostic is admin-only and never returns a secret', async () => {
+    const anon = await call('/api/admin/payhero/diagnose');
+    assert.equal(anon.status, 401);
+    const user = await call('/api/auth/register', { method: 'POST', body: { email: `diag.${Date.now()}@example.com`, password: 'Password!123' } });
+    const cookie = (user.cookie || '').split(';')[0];
+    const asUser = await call('/api/admin/payhero/diagnose', { cookie });
+    assert.equal(asUser.status, 403);
+
+    const session = (await loginAs(ADMIN_EMAIL, ADMIN_PASSWORD)).session;
+    const asAdmin = await call('/api/admin/payhero/diagnose', { cookie: session });
+    assert.equal(asAdmin.status, 200);
+    assert.equal(asAdmin.data.config.auth_source, 'PAYHERO_BASIC_AUTH');
+    assert.ok(asAdmin.data.probe.ok);
+    assert.equal(asAdmin.data.probe.channel_matches_env, true);
+    // lengths only: the encoded credential itself must never appear
+    const body = JSON.stringify(asAdmin.data);
+    assert.doesNotMatch(body, /dGVzdDp0ZXN0/);
   });
 
   await test('cron fails closed when no CRON_SECRET is configured', async () => {

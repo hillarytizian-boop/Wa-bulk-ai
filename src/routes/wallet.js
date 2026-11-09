@@ -56,7 +56,12 @@ router.post(
       "SELECT COUNT(*) AS n FROM topups WHERE user_id = $1 AND status = 'pending' AND created_at > $2",
       [req.user.id, now() - 600]
     );
-    if (Number(pending.n) >= 3) throw new HttpError(429, 'You already have pending payments. Wait for them to complete.');
+    if (Number(pending.n) >= 3) {
+      throw new HttpError(
+        429,
+        `You have ${Number(pending.n)} M-Pesa prompt(s) waiting. Approve them on your phone, or wait up to 10 minutes and try again.`
+      );
+    }
 
     // Our own reference travels with the request and comes back in PayHero's callback, so a
     // payment can be matched even if the M-Pesa checkout id is missing from the payload.
