@@ -151,7 +151,9 @@ router.post(
     const row = await db.one('SELECT * FROM users WHERE email = $1', [email]);
     // Always run a hash comparison so response time does not reveal whether the email exists.
     const ok = await bcrypt.compare(password.slice(0, BCRYPT_MAX_BYTES), row ? row.password_hash : DUMMY_HASH);
-    if (!row || !ok) {
+    // Fail closed for accounts that have no password of their own (Google-only). password_set = 0
+    // means the hash is a random placeholder, and a placeholder must never authenticate anyone.
+    if (!row || !ok || !Number(row.password_set)) {
       noteFailure(key);
       throw new HttpError(401, 'Incorrect email or password');
     }
