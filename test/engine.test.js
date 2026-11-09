@@ -257,6 +257,35 @@ async function test(name, fn) {
     assert.equal(balance(), before + 50000);
   });
 
+  await test('M-Pesa: a short payment credits only what M-Pesa collected', async () => {
+    const { id, providerRef } = await createTopup(500);
+    const before = balance();
+    mock.state.mpesaResult[providerRef] = '0';
+    mock.state.mpesaAmount[providerRef] = 100; // customer approved a smaller figure somehow
+    assert.equal(await mpesa.reconcileTopup(id), 'paid');
+    assert.equal(balance(), before + 10000);
+    const row = raw.prepare('SELECT credited_cents FROM topups WHERE id = ?').get(id);
+    assert.equal(Number(row.credited_cents), 10000);
+  });
+
+  await test('M-Pesa: a payment larger than the top-up never over-credits the wallet', async () => {
+    const { id, providerRef } = await createTopup(200);
+    const before = balance();
+    mock.state.mpesaResult[providerRef] = '0';
+    mock.state.mpesaAmount[providerRef] = 5000;
+    assert.equal(await mpesa.reconcileTopup(id), 'paid');
+    assert.equal(balance(), before + 20000); // requested KES 200, not 5,000
+  });
+
+  await test('M-Pesa: a SUCCESS reported in another currency is held, not credited', async () => {
+    const { id, providerRef } = await createTopup(300);
+    const before = balance();
+    mock.state.mpesaResult[providerRef] = '0';
+    mock.state.mpesaCurrency[providerRef] = 'USD';
+    assert.equal(await mpesa.reconcileTopup(id), 'pending');
+    assert.equal(balance(), before);
+  });
+
   await test('M-Pesa: customer cancels the prompt -> topup fails, nothing credited', async () => {
     const { id, providerRef } = await createTopup(200);
     mock.state.mpesaResult[providerRef] = '1032';

@@ -85,16 +85,30 @@ async function stkPush({ phone, amountKes, externalRef }) {
   return { checkoutRequestId, providerRef };
 }
 
-/** Ask PayHero what happened to a payment. Returns 'paid' | 'failed' | 'pending'. */
+/**
+ * Ask PayHero what happened to a payment.
+ * Returns { status: 'paid'|'failed'|'pending', amountKes, currency, receipt }.
+ *
+ * The amount matters: the wallet is credited with what M-Pesa actually collected, never with the
+ * number the customer typed, so a part-payment can never turn into a full top-up.
+ */
 async function queryStatus({ providerRef, checkoutRequestId }) {
   const reference = providerRef || checkoutRequestId;
-  if (!reference) return 'pending';
+  const unknown = { status: 'pending', amountKes: null, currency: null, receipt: null };
+  if (!reference) return unknown;
   const { ok, data } = await call(`/api/v2/transaction-status?reference=${encodeURIComponent(reference)}`);
-  if (!ok || !data) return 'pending';
-  const status = String(data.status || '').toUpperCase();
-  if (status === 'SUCCESS') return 'paid';
-  if (status === 'FAILED') return 'failed';
-  return 'pending'; // QUEUED
+  if (!ok || !data) return unknown;
+  const raw = String(data.status || '').toUpperCase();
+  const amountRaw = data.amount !== undefined ? data.amount : data.transaction_amount;
+  const amount = Number(amountRaw);
+  const receipt = data.mpesa_receipt || data.MpesaReceiptNumber || data.provider_reference;
+  return {
+    status: raw === 'SUCCESS' ? 'paid' : raw === 'FAILED' ? 'failed' : 'pending', // anything else = QUEUED
+    // Only a positive, finite figure counts; a missing amount keeps the requested one.
+    amountKes: Number.isFinite(amount) && amount > 0 ? Math.round(amount) : null,
+    currency: data.currency ? String(data.currency).toUpperCase() : null,
+    receipt: receipt ? String(receipt).slice(0, 40) : null,
+  };
 }
 
 /** His wallet balance at PayHero (service wallet). Used by the admin console. */
@@ -104,23 +118,37 @@ async function providerBalance() {
   return { balance: Number(data.available_balance || 0), currency: data.currency || 'KES' };
 }
 
-/** Credit a paid top-up exactly once (guarded by the row lock + the topup status). */
-async function credit(topupId, receipt) {
+/**
+ * Credit a paid top-up exactly once (guarded by the row lock + the topup status).
+ * `paidKes` is what the provider says M-Pesa collected; the wallet never receives more than the
+ * customer asked for, and a short payment credits only the amount that really moved.
+ */
+async function credit(topupId, receipt, paidKes) {
   return db.tx(async (t) => {
     const row = await t.one('SELECT * FROM topups WHERE id = $1 FOR UPDATE', [topupId]);
     if (!row || row.status !== 'pending') return false;
-    await t.run("UPDATE topups SET status = 'paid', receipt = $1, updated_at = $2 WHERE id = $3 AND status = 'pending'", [
+    const requested = Math.round(Number(row.amount_kes));
+    let creditedKes = requested;
+    if (Number.isFinite(paidKes) && paidKes > 0) {
+      creditedKes = Math.min(requested, Math.round(paidKes));
+      if (creditedKes < requested) {
+        console.warn(`[payhero] topup ${topupId} was underpaid: collected KES ${paidKes} of ${requested}`);
+      }
+    }
+    const credited = creditedKes * 100;
+    await t.run("UPDATE topups SET status = 'paid', credited_cents = $1, receipt = $2, updated_at = $3 WHERE id = $4 AND status = 'pending'", [
+      credited,
       receipt || null,
       now(),
       topupId,
     ]);
-    await t.run('UPDATE users SET balance_cents = balance_cents + $1 WHERE id = $2', [row.credited_cents, row.user_id]);
+    await t.run('UPDATE users SET balance_cents = balance_cents + $1 WHERE id = $2', [credited, row.user_id]);
     await t.run('INSERT INTO transactions (user_id, amount_cents, type, ref, note, created_at) VALUES ($1,$2,$3,$4,$5,$6)', [
       row.user_id,
-      Number(row.credited_cents),
+      credited,
       'topup',
       `topup:${topupId}`,
-      `M-Pesa KES ${row.amount_kes}${receipt ? ` (${receipt})` : ''}`,
+      `M-Pesa KES ${creditedKes}${receipt ? ` (${receipt})` : ''}`,
       now(),
     ]);
     return true;
@@ -137,15 +165,21 @@ async function reconcileTopup(topupId, receipt) {
     result = await queryStatus({ providerRef: t.provider_ref, checkoutRequestId: t.checkout_request_id });
   } catch (err) {
     console.warn(`[payhero] status check failed for topup ${topupId}: ${err.message}`);
-    result = 'pending';
+    result = { status: 'pending', amountKes: null, currency: null, receipt: null };
   }
 
-  if (result === 'paid') {
-    await credit(topupId, receipt);
+  if (result.status === 'paid') {
+    // A "SUCCESS" in another currency is not our money - hold the top-up for a human instead of
+    // inventing a balance out of a mismatched payload.
+    if (result.currency && result.currency !== 'KES') {
+      console.warn(`[payhero] topup ${topupId} reports currency ${result.currency}; not crediting`);
+      return 'pending';
+    }
+    await credit(topupId, receipt || result.receipt, result.amountKes);
     return 'paid';
   }
   // Give the customer 30 minutes to finish the prompt before writing the attempt off.
-  if (result === 'failed' || now() - Number(t.created_at) > 30 * 60) {
+  if (result.status === 'failed' || now() - Number(t.created_at) > 30 * 60) {
     await db.run("UPDATE topups SET status = 'failed', updated_at = $1 WHERE id = $2 AND status = 'pending'", [now(), topupId]);
     return 'failed';
   }

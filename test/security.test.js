@@ -24,6 +24,36 @@ async function test(name, fn) {
 
   const ADMIN_EMAIL = 'boss@panel.test';
   const ADMIN_PASSWORD = 'Sup3rSecret!2024';
+
+  // Tiny PayHero stand-in so the payment tests exercise the real code path (STK push -> status
+  // re-query -> credit) instead of a stub. `collected` is only reported once `paid` flips.
+  const payhero = { paid: false, collected: 500 };
+  const phServer = http.createServer((req, res) => {
+    const u = new URL(req.url, 'http://x');
+    res.setHeader('Content-Type', 'application/json');
+    if (u.pathname === '/api/v2/payments') {
+      res.statusCode = 201;
+      return res.end(JSON.stringify({ success: true, reference: 'PHTEST1', CheckoutRequestID: 'ws_CO_test_1' }));
+    }
+    if (u.pathname === '/api/v2/transaction-status') {
+      const ref = u.searchParams.get('reference');
+      const done = payhero.paid && Boolean(ref);
+      return res.end(
+        JSON.stringify({
+          status: done ? 'SUCCESS' : 'QUEUED',
+          success: done,
+          reference: ref,
+          amount: done ? payhero.collected : undefined,
+          currency: 'KES',
+        })
+      );
+    }
+    res.statusCode = 404;
+    res.end('{}');
+  });
+  await new Promise((r) => phServer.listen(0, '127.0.0.1', r));
+  const phPort = phServer.address().port;
+
   Object.assign(process.env, {
     DATABASE_PATH: dbFile,
     JWT_SECRET: 'security-test-secret',
@@ -33,6 +63,11 @@ async function test(name, fn) {
     AUTH_RATE_LIMIT: '500', // this suite deliberately makes many auth calls
     NODE_ENV: 'test',
     KES_PER_USD: '129',
+    // Payments on, pointed at the stand-in above (Basic auth + one channel is all that is needed).
+    PAYHERO_BASIC_AUTH: Buffer.from('test:test').toString('base64'),
+    PAYHERO_CHANNEL_ID: '133',
+    PAYHERO_BASE_URL: `http://127.0.0.1:${phPort}`,
+    PUBLIC_URL: 'https://panel.test',
   });
 
   const pricing = require('../src/pricing');
@@ -67,6 +102,16 @@ async function test(name, fn) {
     }
     return { status: res.status, data, cookie: res.headers.get('set-cookie'), headers: res.headers };
   }
+
+  /** Wait (briefly) for a background effect such as the callback's reconcile. */
+  const waitFor = async (fn, ms = 2000) => {
+    const deadline = Date.now() + ms;
+    for (;;) {
+      if (await fn()) return true;
+      if (Date.now() > deadline) return false;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+  };
 
   const loginAs = async (email, password) => {
     const res = await call('/api/auth/login', { method: 'POST', body: { email, password } });
@@ -324,7 +369,94 @@ async function test(name, fn) {
     assert.ok([400, 503].includes(tooSmall.status)); // 503 when M-Pesa is disabled
   });
 
+  await test('a forged callback with a SUCCESS body cannot credit a wallet nobody paid for', async () => {
+    const mpesa = require('../src/mpesa');
+    const owner = raw.prepare('SELECT id, balance_cents FROM users WHERE email = ?').get(ADMIN_EMAIL);
+    const t = Math.floor(Date.now() / 1000);
+    const topupId = Number(
+      raw
+        .prepare(
+          `INSERT INTO topups (user_id, phone, amount_kes, credited_cents, checkout_request_id, provider_ref, external_ref, status, created_at, updated_at)
+           VALUES (?,?,?,?,?,?,?,'pending',?,?)`
+        )
+        .run(owner.id, '254712345678', 500, 50000, 'ws_CO_test_1', 'PHTEST1', 'W1-forged', t, t).lastInsertRowid
+    );
+
+    // PayHero has not seen a shilling yet; the body below is what an attacker would send.
+    const res = await call(`/api/wallet/mpesa/callback/${mpesa.callbackSecret()}`, {
+      method: 'POST',
+      body: {
+        status: true,
+        response: { Status: 'Success', ResultCode: 0, CheckoutRequestID: 'ws_CO_test_1', ExternalReference: 'W1-forged', MpesaReceiptNumber: 'FAKE123' },
+      },
+    });
+    assert.equal(res.status, 200); // providers always get an ack
+    assert.equal(raw.prepare('SELECT balance_cents FROM users WHERE id = ?').get(owner.id).balance_cents, owner.balance_cents);
+    assert.equal(raw.prepare('SELECT status FROM topups WHERE id = ?').get(topupId).status, 'pending');
+  });
+
+  await test('a confirmed payment credits exactly once, however many callbacks arrive', async () => {
+    const mpesa = require('../src/mpesa');
+    const owner = raw.prepare('SELECT id, balance_cents FROM users WHERE email = ?').get(ADMIN_EMAIL);
+    payhero.paid = true;
+    for (let i = 0; i < 3; i += 1) {
+      await call(`/api/wallet/mpesa/callback/${mpesa.callbackSecret()}`, {
+        method: 'POST',
+        body: { status: true, response: { Status: 'Success', ResultCode: 0, CheckoutRequestID: 'ws_CO_test_1', MpesaReceiptNumber: 'QWE123' } },
+      });
+    }
+    const after = raw.prepare('SELECT balance_cents FROM users WHERE id = ?').get(owner.id).balance_cents;
+    assert.equal(after, owner.balance_cents + 50000); // KES 500 once
+    assert.equal(raw.prepare("SELECT COUNT(*) AS n FROM transactions WHERE type = 'topup' AND ref = 'topup:1'").get().n, 1); // one ledger line
+  });
+
+  await test('a part payment credits only the amount M-Pesa collected', async () => {
+    const mpesa = require('../src/mpesa');
+    const owner = raw.prepare('SELECT id, balance_cents FROM users WHERE email = ?').get(ADMIN_EMAIL);
+    const t = Math.floor(Date.now() / 1000);
+    // A second top-up pointing at a reference the stand-in reports as fully paid for KES 120.
+    raw
+      .prepare(
+        `INSERT INTO topups (user_id, phone, amount_kes, credited_cents, checkout_request_id, provider_ref, external_ref, status, created_at, updated_at)
+         VALUES (?,?,?,?,?,?,?,'pending',?,?)`
+      )
+      .run(owner.id, '254712345678', 500, 50000, 'ws_CO_test_1b', 'PHTEST2', 'W1-part', t, t);
+    payhero.collected = 120;
+    await call(`/api/wallet/mpesa/callback/${mpesa.callbackSecret()}`, {
+      method: 'POST',
+      body: { status: true, response: { Status: 'Success', ResultCode: 0, CheckoutRequestID: 'ws_CO_test_1b' } },
+    });
+    await waitFor(() => raw.prepare("SELECT status FROM topups WHERE checkout_request_id = 'ws_CO_test_1b'").get().status === 'paid');
+    const after = raw.prepare('SELECT balance_cents FROM users WHERE id = ?').get(owner.id).balance_cents;
+    assert.equal(after, owner.balance_cents + 12000); // KES 120, not the KES 500 asked for
+  });
+
+  await test('the API hides itself: noindex header, robots.txt, bare 404s, no stack traces', async () => {
+    const list = await call('/api/definitely-not-a-route');
+    assert.equal(list.status, 404);
+    assert.deepEqual(list.data, { error: 'Not found' });
+    assert.match(String(list.headers.get('x-robots-tag') || ''), /noindex/);
+    assert.equal(list.headers.get('x-powered-by'), null);
+
+    const robots = await new Promise((resolve, reject) => {
+      http
+        .get(`${base}/robots.txt`, (r) => {
+          let body = '';
+          r.on('data', (c) => (body += c));
+          r.on('end', () => resolve({ status: r.statusCode, body }));
+        })
+        .on('error', reject);
+    });
+    assert.equal(robots.status, 200);
+    assert.match(robots.body, /Disallow: \/api\//);
+    assert.match(robots.body, /Disallow: \/admin/);
+
+    const health = await call('/healthz');
+    assert.deepEqual(health.data, { ok: true }); // no dialect, uptime or version
+  });
+
   server.close();
+  phServer.close();
   for (const ext of ['', '-wal', '-shm']) fs.rmSync(dbFile + ext, { force: true });
 
   const failed = results.filter((r) => !r.ok).length;

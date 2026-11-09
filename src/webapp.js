@@ -87,7 +87,9 @@ function createApp() {
   app.get('/healthz', async (_req, res) => {
     try {
       await db.one('SELECT 1 AS ok');
-      res.json({ ok: true, db: db.dialect, uptime: Math.round(process.uptime()) });
+      // Verdict only: the dialect, uptime and version are free reconnaissance for anyone probing.
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ ok: true });
     } catch (err) {
       // Uptime checks only need the verdict; echoing a driver error here would leak schema and
       // host details to anyone who asks.
@@ -109,6 +111,13 @@ function createApp() {
     standardHeaders: true,
     legacyHeaders: false,
     message: { error: 'Too many admin requests' },
+  });
+
+  // The API is not a document: no crawler should index it (public/robots.txt disallows the same
+  // paths, this header covers proxies that ignore robots.txt).
+  app.use('/api', (_req, res, next) => {
+    res.setHeader('X-Robots-Tag', 'noindex, nofollow');
+    next();
   });
 
   // Load the editable pricing settings once per cold start (cheap no-op afterwards).

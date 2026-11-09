@@ -23,6 +23,8 @@ function createMock() {
     orders: [], // provider-side orders
     byKey: new Map(), // idempotency key -> { order, hits }
     mpesaResult: {}, // CheckoutRequestID -> '0' | '1032' (absent = still pending)
+    mpesaAmount: {}, // CheckoutRequestID -> amount actually collected (defaults to the amount asked for)
+    mpesaCurrency: {}, // CheckoutRequestID -> currency override, to test the mismatch guard
     stkPushes: [],
     nextOrder: 1000000,
     nextCheckout: 1,
@@ -119,10 +121,14 @@ function createMock() {
       const q = new URL(url, 'http://x').searchParams.get('reference') || '';
       const r = state.mpesaResult[q];
       if (r === undefined) return json(res, 200, { status: 'QUEUED', success: false, reference: q });
+      const pushed = state.stkPushes.find((p) => p.reference === q || p.id === q);
+      const collected = state.mpesaAmount[q] !== undefined ? state.mpesaAmount[q] : pushed && pushed.amount;
       return json(res, 200, {
         status: r === '0' ? 'SUCCESS' : 'FAILED',
         success: r === '0',
         reference: q,
+        amount: r === '0' ? collected : undefined,
+        currency: state.mpesaCurrency[q] || 'KES',
         provider_reference: r === '0' ? 'QWE123' : '',
       });
     }
