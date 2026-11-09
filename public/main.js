@@ -62,6 +62,7 @@
     star: '<path d="m12 3.9 2.6 5.3 5.9.9-4.3 4.1 1 5.9-5.2-2.8-5.2 2.8 1-5.9L3.5 10.1l5.9-.9z"/>',
     chat: '<path d="M20.5 12c0 4-3.8 7.2-8.5 7.2-1 0-2-.15-2.9-.42L4.2 20.4l1.4-3.6A6.9 6.9 0 0 1 3.5 12c0-4 3.8-7.2 8.5-7.2s8.5 3.2 8.5 7.2z"/>',
     download: '<path d="M12 4.6v9.6M8.2 10.6 12 14.4l3.8-3.8M5.4 19h13.2"/>',
+    whatsapp: '<path d="M20.2 11.7a8.2 8.2 0 0 1-12.2 7.2L3.8 20.2l1.4-4.1a8.2 8.2 0 1 1 15-4.4z"/><path d="M9.1 9.2c.2-.5.4-.5.7-.5h.5c.2 0 .4 0 .5.4l.7 1.6c0 .2 0 .3-.1.5l-.4.5c-.1.2-.2.3 0 .5.4.7 1.1 1.3 1.9 1.6.2.1.3.1.5-.1l.5-.6c.2-.2.3-.2.5-.1l1.5.7c.2.1.3.2.3.4 0 .5-.2 1.1-.6 1.4-.4.4-1 .5-1.6.4-1.6-.3-3.1-1.2-4.2-2.4-.9-1-1.5-2.2-1.6-3.3 0-.5.1-.9.4-1.1z" fill="currentColor" stroke="none"/>',
     key: '<circle cx="8.6" cy="12" r="4.4"/><path d="M12.4 9.2h7.2M17.2 9.2v3.4M20.4 12.6v2.6"/>',
     flame: '<path d="M12 3.2c3.4 4.1 5.7 6.2 5.7 9.5A5.7 5.7 0 0 1 12 18.4a5.7 5.7 0 0 1-5.7-5.7c0-3.3 2.3-5.4 5.7-9.5z"/><path d="M12 18.4a2.8 2.8 0 0 0 2.8-2.8c0-1.7-1.2-2.7-2.8-4.8-1.6 2.1-2.8 3.1-2.8 4.8a2.8 2.8 0 0 0 2.8 2.8z"/>',
   };
@@ -894,7 +895,11 @@
             h('a', {
               class: 'wa-mini', target: '_blank', rel: 'noopener noreferrer',
               href: whatsappHref(`Hi, order #${o.id} (${o.service_name}) needs help. Link: ${o.link || '-'}`),
-            }, svg(ICO.whatsapp, 14), 'Text us about #' + o.id))
+            }, svg(ICO.whatsapp, 14), 'Text us about #' + o.id),
+            h('a', {
+              class: 'wa-mini', style: 'margin-left:14px',
+              href: `#/support?order=${o.id}&service=${encodeURIComponent(o.service_name || '')}`,
+            }, 'Open a ticket'))
         : null,
       opts.actions ? h('div', { class: 'order-actions' },
         o.can_refill ? h('button', { class: 'btn ghost small', onclick: (ev) => opts.onAct(ev, o.id, 'refill') }, 'Refill') : null,
@@ -1319,12 +1324,19 @@
       h('span', null, relDate(t.updated_at)),
       t.email ? h('span', null, t.email) : null));
 
-  async function supportView() {
+  async function supportView(params = {}) {
     if (!requireLogin()) return;
     stopTimer();
+    // #/support?order=1042&service=Instagram%20followers opens a ticket already filled in, so a
+    // customer never has to retype the order number we already know.
+    const orderId = params.order ? String(params.order).replace(/\D/g, '') : '';
     const listBox = h('div', null, skeletons(3));
-    const subject = h('input', { type: 'text', maxlength: '120', placeholder: 'e.g. Order #1042 has not started' });
+    const subject = h('input', {
+      type: 'text', maxlength: '120', placeholder: 'e.g. Order #1042 has not started',
+      value: orderId ? `Order #${orderId} needs help` : '',
+    });
     const message = h('textarea', { placeholder: 'Include the order ID and the link you submitted.' });
+    if (orderId) message.value = `Hello, this is about order #${orderId}` + (params.service ? ` (${params.service}).` : '.') + ' ';
     const err = h('div', { class: 'errtext' });
     const btn = h('button', { class: 'btn block' }, 'Open ticket');
 
@@ -1445,7 +1457,7 @@
       case 'orders': return ordersView();
       case 'mass': return massView();
       case 'drip': return dripView();
-      case 'support': return supportView();
+      case 'support': return supportView(params);
       case 'password': return passwordView();
       case 'help': return helpView();
       case 'wallet': return walletView();
