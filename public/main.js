@@ -481,7 +481,7 @@
       const kids = [];
       if (data.platform) {
         kids.push(h('div', { class: 'finder-platform' },
-          h('span', { class: 'plat-ico', style: `color:${data.platform.color};border-color:${data.platform.color}55;background:${data.platform.color}1f` }, abbr(data.platform.name)),
+          h('span', { class: 'plat-ico' }, abbr(data.platform.name)),
           h('div', { style: 'min-width:0' },
             h('div', { style: 'font-weight:700' }, data.platform.name),
             h('div', { class: 'muted', style: 'font-size:.8rem' },
@@ -588,7 +588,7 @@
         recentBox));
 
     if (!state.user) {
-      fill(balanceSlot, h('div', { class: 'v', style: 'font-size:2rem;font-weight:800' }, kes(0)));
+      fill(balanceSlot, h('div', { class: 'v', style: 'font-size:1.35rem;font-weight:800' }, kes(0)));
       pill.textContent = 'Signed out';
       fill(recentBox, h('p', { class: 'muted' }, 'No orders yet.'));
       return;
@@ -599,7 +599,7 @@
       if (stale()) return;
       state.user = user;
       state.orders = orders;
-      fill(balanceSlot, h('div', { style: 'font-size:2rem;font-weight:800;letter-spacing:-.02em' }, amt(user.balance_cents)));
+      fill(balanceSlot, h('div', { style: 'font-size:1.35rem;font-weight:800;letter-spacing:-.01em' }, amt(user.balance_cents)));
       pill.textContent = 'Live';
       pill.className = 'refresh-pill ok';
       renderChrome();
@@ -738,7 +738,6 @@
         data.platforms.map((p) => h('a', {
           class: 'tchip',
           href: `#/order?platform=${encodeURIComponent(p.key)}&sort=cheap`,
-          style: `color:${p.color}`,
         }, svg(ICO.flame, 14), h('span', null, p.name)))) : null,
       h('div', { class: 'card'},
         data.services.length ? data.services.map(trendingRow)
@@ -757,10 +756,7 @@
   }
 
   const platTile = (p, href) => h('a', { class: 'plat', href },
-    h('span', {
-      class: 'plat-ico',
-      style: `color:${p.color};border-color:${p.color}55;background:${p.color}1f`,
-    }, abbr(p.name)),
+    h('span', { class: 'plat-ico' }, abbr(p.name)),
     h('span', { class: 'plat-name' }, p.name),
     h('span', { class: 'plat-count' }, p.label || `${num(p.count)} services`));
 
@@ -785,12 +781,12 @@
     const tiles = new Map();
     const tile = (p, href) => { const el = platTile(p, href); tiles.set(p.key, el); return el; };
     const grid = h('div', { class: 'plat-grid' },
-      tile({ key: 'trend', name: 'Trending', color: '#ff6b35', label: 'Hot right now' }, '#/trending'),
+      tile({ key: 'trend', name: 'Trending', label: 'Hot right now' }, '#/trending'),
       state.favorites.size
-        ? tile({ key: 'fav', name: 'Starred', color: '#f7b955', count: state.favorites.size }, '#/order?favorites=1')
+        ? tile({ key: 'fav', name: 'Starred', count: state.favorites.size }, '#/order?favorites=1')
         : null,
       data.platforms.map((p) => tile(p, `#/order?platform=${encodeURIComponent(p.key)}&sort=cheap`)),
-      tile({ key: 'all', name: 'All services', color: '#3ee07b', count: data.pagination.total },
+      tile({ key: 'all', name: 'All services', count: data.pagination.total },
         '#/order?platform=all&sort=cheap'));
 
     loadTrending().then((trend) => {
@@ -840,8 +836,8 @@
     if (stale()) return;
 
     const plat = starred
-      ? { name: 'Starred services', color: '#f7b955', count: data.services.length }
-      : data.platforms.find((p) => p.key === platform) || { name: 'All services', color: '#3ee07b', count: data.pagination.total };
+      ? { name: 'Starred services', count: data.services.length }
+      : data.platforms.find((p) => p.key === platform) || { name: 'All services', count: data.pagination.total };
 
     const search = h('input', { type: 'search', placeholder: `Search ${plat.name} services…`, value: q, autocomplete: 'off' });
     search.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') location.hash = link({ q: search.value.trim() }); });
@@ -869,10 +865,7 @@
     fill(view,
       h('a', { class: 'backlink', href: '#/order' }, '← All platforms'),
       h('div', { class: 'row', style: 'gap:12px;margin-bottom:14px' },
-        h('span', {
-          class: 'plat-ico lg',
-          style: `color:${plat.color};border-color:${plat.color}55;background:${plat.color}1f`,
-        }, abbr(plat.name)),
+        h('span', { class: 'plat-ico lg' }, abbr(plat.name)),
         h('div', null,
           h('h1', { style: 'margin:0' }, plat.name),
           h('div', { class: 'muted', style: 'font-size:.85rem' }, `${num(data.pagination.total)} services`))),
@@ -1143,7 +1136,7 @@
     const svcSel = h('select', { 'aria-label': 'Service' });
     const qty = h('input', { type: 'number', min: '1', value: '1000', inputmode: 'numeric' });
     const links = h('textarea', { placeholder: 'https://instagram.com/p/abc\nhttps://instagram.com/p/def' });
-    const summary = h('div', { style: 'font-size:1.5rem;font-weight:800' }, '—');
+    const summary = h('div', { style: 'font-size:1.15rem;font-weight:800' }, '—');
     const results = h('div');
     const runBtn = h('button', { class: 'btn block' }, 'Place all orders');
 
@@ -1225,7 +1218,7 @@
     const s = support();
     return h('p', { class: 'hint', style: 'text-align:center;margin-top:14px' },
       'Trouble signing in? ',
-      h('a', { href: whatsappHref('Hi, I am having trouble signing in to smmpanel.'), target: '_blank', rel: 'noopener noreferrer', style: 'color:#4ade80;font-weight:700' },
+      h('a', { href: whatsappHref('Hi, I am having trouble signing in to smmpanel.'), target: '_blank', rel: 'noopener noreferrer' },
         'Text ' + s.phone + ' on WhatsApp'));
   }
 
@@ -1365,7 +1358,7 @@
       pageHead('Wallet', 'Top up with M-Pesa and pay for orders instantly.'),
       h('div', { class: 'card' },
         h('h2', null, 'Wallet balance'),
-        h('div', { style: 'font-size:2rem;font-weight:800;letter-spacing:-.02em' }, amt(data.balance_cents)),
+        h('div', { style: 'font-size:1.35rem;font-weight:800;letter-spacing:-.01em' }, amt(data.balance_cents)),
         h('p', { class: 'muted', style: 'margin:10px 0 0' }, 'Available to spend on orders.')),
       h('div', { class: 'card' },
         h('h2', null, 'Top up with M-Pesa'),
@@ -1381,7 +1374,7 @@
         data.transactions.length
           ? h('div', { class: 'table-wrap' }, h('table', null, h('tbody', null, data.transactions.map((t) => h('tr', null,
               h('td', null, fmtDate(t.created_at)), h('td', null, t.type),
-              h('td', { class: 'num', style: t.amount_cents < 0 ? 'color:#ffb4b4' : 'color:#3ee07b' }, `${t.amount_cents > 0 ? '+' : ''}${amt(t.amount_cents)}`),
+              h('td', { class: 'num' }, `${t.amount_cents > 0 ? '+' : ''}${amt(t.amount_cents)}`),
               h('td', { class: 'meta' }, t.note || ''))))))
           : h('p', { class: 'muted' }, 'No transactions yet.')),
       data.topups.length
@@ -1524,12 +1517,12 @@
       const t = data.ticket;
       fill(head,
         h('div', { class: 'page-head' },
-          h('div', null, h('h1', { style: 'font-size:1.4rem' }, `#${t.id} ${t.subject}`), h('p', { class: 'sub' }, `Opened ${fmtDate(t.created_at)}`)),
+          h('div', null, h('h1', null, `#${t.id} ${t.subject}`), h('p', { class: 'sub' }, `Opened ${fmtDate(t.created_at)}`)),
           ticketBadge(t)));
       closeBtn.disabled = t.status !== 'open';
       fill(thread, data.messages.map((m) => h('div', {
         class: 'order-item',
-        style: m.is_admin ? 'border-color:rgba(62,224,123,.35)' : '',
+        style: m.is_admin ? 'border-color:var(--text)' : '',
       },
         h('div', { class: 'order-top' },
           h('div', { class: 'order-id', style: 'font-size:.85rem' }, m.is_admin ? 'Support' : 'You'),
