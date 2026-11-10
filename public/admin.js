@@ -83,25 +83,71 @@
       if (err.status === 401) return signedOut();
       return fill(view, h('div', { class: 'card err' }, err.message));
     }
-    if (!user || !user.is_admin) return forbidden(user);
+    // /auth/me answers 200 with {user:null} when there is no session at all. That is a
+    // sign-in prompt, not a permissions problem, so it must not render 'no admin rights'.
+    if (!user) return signedOut();
+    if (!user.is_admin) return forbidden(user);
     who.textContent = `${user.email} · admin`;
     signOut.hidden = false;
     render();
   }
 
+  // Sign in without leaving the console: the session cookie is same-site, so a successful
+  // POST /api/auth/login here is enough to open the dashboard on the next boot().
   function signedOut() {
     who.textContent = 'Not signed in';
+    signOut.hidden = true;
+
+    const email = h('input', { type: 'email', autocomplete: 'username', inputmode: 'email', placeholder: 'you@example.com' });
+    const pass = h('input', { type: 'password', autocomplete: 'current-password', placeholder: 'Your password' });
+    const line = h('div', { class: 'err admin-form-err', role: 'alert' });
+    const btn = h('button', { class: 'btn block', type: 'submit' }, 'Sign in');
+    const form = h('form', { class: 'admin-form' },
+      h('label', null, 'Admin email'), email,
+      h('label', null, 'Password'), pass,
+      line, btn);
+    if (email.setAttribute) email.setAttribute('autocapitalize', 'none');
+
+    form.addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      line.textContent = '';
+      btn.disabled = true;
+      const label = btn.textContent;
+      btn.textContent = 'Signing in…';
+      try {
+        const { user } = await api('/auth/login', { method: 'POST', body: { email: email.value, password: pass.value } });
+        if (!user) throw new Error('Sign-in did not return an account.');
+        if (!user.is_admin) return forbidden(user);
+        boot();
+        return;
+      } catch (err) {
+        line.textContent = err.status === 401 ? 'Incorrect email or password.' : err.message;
+      }
+      btn.disabled = false;
+      btn.textContent = label;
+      if (pass.focus) pass.focus();
+    });
+
     fill(view, h('div', { class: 'card' },
-      h('h2', null, 'Admin sign-in required'),
-      h('p', { class: 'muted' }, 'This page only opens for the admin account. Sign in, then you will be brought straight back here.'),
-      h('a', { class: 'btn block', href: '/#/login?next=/admin' }, 'Sign in')));
+      h('h2', null, 'Admin sign-in'),
+      h('p', { class: 'muted' }, 'Enter the admin account to open the console.'),
+      form,
+      h('p', { class: 'hint' }, 'Not the admin account? ', h('a', { href: '/' }, 'Back to the panel'), '.')));
+    setTimeout(() => { if (email.focus) email.focus(); }, 40);
   }
 
   function forbidden(user) {
-    who.textContent = user ? `${user.email} · not an admin` : 'Not signed in';
+    who.textContent = user && user.email ? `${user.email} · not an admin` : 'Not signed in';
+    const switchUser = h('button', { class: 'btn ghost block' }, 'Sign in as the admin instead');
+    switchUser.addEventListener('click', async () => {
+      switchUser.disabled = true;
+      await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' }).catch(() => {});
+      signedOut();
+    });
     fill(view, h('div', { class: 'card' },
-      h('h2', null, 'Admin access only'),
-      h('p', { class: 'muted' }, 'This account does not have admin rights. If you think that is a mistake, contact the site owner.'),
+      h('h2', null, 'This account is not an admin'),
+      h('p', { class: 'muted' }, 'You are signed in, but this account has no admin rights. Use the admin account to open the console.'),
+      switchUser,
       h('a', { class: 'btn ghost block', href: '/' }, 'Back to the panel')));
     audit401();
   }

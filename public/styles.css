@@ -474,6 +474,12 @@ tbody tr:last-child td { border-bottom: none; }
 .admin-main .card { margin: 0; }
 .admin-main .card h2 { margin-bottom: 10px; }
 .admin-main .err { color: #ffb4b4; }
+.admin-form { margin: 4px 0 0; }
+.admin-form label:first-child { margin-top: 6px; }
+.admin-form .btn { margin-top: 16px; }
+.admin-form-err { min-height: 1.15em; margin: 12px 0 0; font-size: .86rem; }
+.admin-main .card .btn.block + .btn.block,
+.admin-main .card a.btn.block { margin-top: 10px; }
 
 /* WhatsApp support line — the fastest route to a human */
 .wa-card { border-color: rgba(37, 211, 102, .35); background: linear-gradient(180deg, rgba(37,211,102,.10), rgba(37,211,102,.03)); }
