@@ -23,7 +23,7 @@ const port = num(process.env.PORT, 3000);
 module.exports = {
   isProd,
   port,
-  siteName: process.env.SITE_NAME || 'SMM Panel',
+  siteName: process.env.SITE_NAME || 'smmpanel',
   // Where customers reach a human. Digits only, international format for the wa.me link.
   support: {
     phone: process.env.SUPPORT_PHONE || '0184355332',

@@ -1,4 +1,4 @@
-/* HilaPanel admin console — a separate page, deliberately not part of the customer SPA.
+/* smmpanel admin console — a separate page, deliberately not part of the customer SPA.
  *
  * Everything here is gated by the API: /api/admin/* answers 401 without a session and 403
  * without is_admin, so the page markup being public gives nothing away. The page itself

@@ -1,4 +1,4 @@
-/* HilaPanel SPA (no build step).
+/* smmpanel SPA (no build step).
    Layout cloned from the smm.africa panel: top bar with X / "Page | Brand" / kebab, a balance
    pill with a currency selector, an app-update banner, segmented tabs, transparent filter chips,
    order cards and a floating five-slot bottom bar (Home · Orders · New Order · Wallet · More).
@@ -287,7 +287,7 @@
 
   function renderChrome() {
     const route = currentRoute().name;
-    const site = state.meta ? state.meta.siteName : 'HilaPanel';
+    const site = state.meta ? state.meta.siteName : 'smmpanel';
     const baseRoute = route.split('/')[0];
     document.title = `${PAGE_TITLES[baseRoute] || 'Dashboard'} | ${site}`;
     document.getElementById('appTitle').textContent = `${PAGE_TITLES[baseRoute] || 'Dashboard'} | ${site}`;
@@ -341,6 +341,10 @@
     kids.push(state.user
       ? h('a', { href: '#', onclick: (ev) => { ev.preventDefault(); closeMenu(); logout(); } }, 'Log out')
       : h('a', { href: '#/login', onclick: closeMenu }, 'Log in'));
+    // Maker's mark at the foot of the menu: who built and maintains this panel.
+    kids.push(h('div', { class: 'menu-sig' },
+      h('span', null, 'Developed by '),
+      h('strong', null, 'HilaTech')));
     fill(menuEl(), ...kids);
 
     // floating bottom bar
@@ -406,7 +410,7 @@
 
   function whatsappHref(text) {
     const s = support();
-    const body = text || 'Hi, I need help with my HilaPanel account.';
+    const body = text || 'Hi, I need help with my smmpanel account.';
     return `https://wa.me/${s.whatsapp}?text=${encodeURIComponent(body)}`;
   }
 
@@ -794,7 +798,7 @@
       for (const p of trend.platforms) {
         const el = tiles.get(p.key);
         if (el && !el.querySelector('.plat-hot')) {
-          el.prepend(h('span', { class: 'plat-hot', title: 'Trending on HilaPanel' }, svg(ICO.flame, 11)));
+          el.prepend(h('span', { class: 'plat-hot', title: 'Trending on smmpanel' }, svg(ICO.flame, 11)));
         }
       }
     }).catch(() => { /* trending is decoration only */ });
@@ -1221,7 +1225,7 @@
     const s = support();
     return h('p', { class: 'hint', style: 'text-align:center;margin-top:14px' },
       'Trouble signing in? ',
-      h('a', { href: whatsappHref('Hi, I am having trouble signing in to HilaPanel.'), target: '_blank', rel: 'noopener noreferrer', style: 'color:#4ade80;font-weight:700' },
+      h('a', { href: whatsappHref('Hi, I am having trouble signing in to smmpanel.'), target: '_blank', rel: 'noopener noreferrer', style: 'color:#4ade80;font-weight:700' },
         'Text ' + s.phone + ' on WhatsApp'));
   }
 
@@ -1627,7 +1631,7 @@
     try { state.meta = await api('/meta'); }
     catch {
       state.meta = {
-        siteName: 'HilaPanel', mpesaEnabled: false, googleEnabled: false,
+        siteName: 'smmpanel', mpesaEnabled: false, googleEnabled: false,
         minTopupKes: 50, maxTopupKes: 150000, kesPerUsd: 129, build: 'dev', fields: {},
       };
     }

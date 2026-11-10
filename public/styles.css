@@ -1,4 +1,4 @@
-/* HilaPanel — layout cloned from the smm.africa panel: dark navy surfaces, green accent,
+/* smmpanel — layout cloned from the smm.africa panel: dark navy surfaces, green accent,
    top bar with an X / "Page | Brand" / kebab, a balance pill with a currency selector,
    an app-update banner, segmented tabs, filter chips and a floating five-slot bottom bar. */
 
@@ -136,6 +136,16 @@ p.sub { color: var(--muted); font-size: 1rem; margin: 0 0 18px; }
 }
 .menu a { padding: 12px; border-radius: 10px; color: var(--text); font-size: .92rem; }
 .menu a:hover, .menu a.active { background: var(--surface-2); }
+
+/* maker's mark at the foot of the menu */
+.menu-sig {
+  display: flex; align-items: center; justify-content: center; gap: 5px;
+  margin: 6px 2px 2px; padding: 11px 8px 5px;
+  border-top: 1px solid var(--line);
+  font-size: .74rem; letter-spacing: .03em; text-transform: uppercase;
+  color: var(--muted);
+}
+.menu-sig strong { color: var(--brand); font-weight: 800; letter-spacing: .06em; }
 
 /* currency popover */
 .popover {
