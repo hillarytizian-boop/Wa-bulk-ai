@@ -37,6 +37,9 @@ module.exports = {
   allowIframe: bool(process.env.ALLOW_IFRAME, !isProd),
   sessionDays: num(process.env.SESSION_DAYS, 14),
   authRateLimit: num(process.env.AUTH_RATE_LIMIT, 20),
+  // Password hashing cost. 12 is four times the work of the old 10; a hash written with a lower
+  // cost is upgraded transparently the next time that account signs in.
+  bcryptRounds: Math.min(15, Math.max(10, num(process.env.BCRYPT_ROUNDS, 12))),
   jwtSecret,
   dbPath: process.env.DATABASE_PATH || path.join(__dirname, '..', 'data', 'store.db'),
 
@@ -61,6 +64,14 @@ module.exports = {
   admin: {
     email: process.env.ADMIN_EMAIL || '',
     password: process.env.ADMIN_PASSWORD || '',
+    // Optional extra wall in front of the console: comma separated IPs / IPv4 CIDRs allowed to
+    // reach /admin and /api/admin. Empty means "anywhere", which is still safe because every
+    // /api/admin/* route needs an admin session - this is for when you want the console to be
+    // invisible from the public internet entirely.
+    allowlist: String(process.env.ADMIN_ALLOWLIST || '')
+      .split(',')
+      .map((v) => v.trim())
+      .filter(Boolean),
   },
 
   // Google sign-in (OAuth 2.0 code flow). Disabled unless both values are set.

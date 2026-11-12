@@ -105,12 +105,46 @@ function createApp() {
     legacyHeaders: false,
     message: { error: 'Too many requests' },
   });
+  // Optional extra wall in front of the console (ADMIN_ALLOWLIST). Off by default: every
+  // /api/admin/* route already needs an admin session, so this only buys "the console is not even
+  // reachable from the public internet". A blocked caller gets the same 404 as any unknown path,
+  // which avoids confirming that a console exists.
+  const adminAllowlist = (config.admin && config.admin.allowlist) || [];
+  const inList = (ip) => {
+    const addr = String(ip || '').replace(/^::ffff:/, '');
+    return adminAllowlist.some((entry) => {
+      if (!entry.includes('/')) return entry === addr;
+      const [base, bitsRaw] = entry.split('/');
+      const bits = Number(bitsRaw);
+      if (!/^\d+\.\d+\.\d+\.\d+$/.test(base) || !/^\d+\.\d+\.\d+\.\d+$/.test(addr) || !(bits >= 0 && bits <= 32)) return false;
+      const toLong = (v) => v.split('.').reduce((acc, part) => (acc << 8 >>> 0) + Number(part), 0) >>> 0;
+      const mask = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0;
+      return (toLong(addr) & mask) === (toLong(base) & mask);
+    });
+  };
+  const adminGate = (req, res, next) => {
+    if (!adminAllowlist.length) return next();
+    if (inList(req.ip)) return next();
+    return res.status(404).json({ error: 'Not found' });
+  };
+
   const adminLimiter = rateLimit({
     windowMs: 60 * 1000,
     limit: 120,
     standardHeaders: true,
     legacyHeaders: false,
     message: { error: 'Too many admin requests' },
+  });
+
+  // Catalogue scraping is the cheapest abuse to mount against a public service list, so it gets
+  // its own (tighter) budget on top of the global one. 120 pages/min is still far more than a
+  // shopper can click through.
+  const catalogLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    limit: 120,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many requests' },
   });
 
   // The API is not a document: no crawler should index it (public/robots.txt disallows the same
@@ -150,8 +184,9 @@ function createApp() {
   });
 
   app.use('/api', apiLimiter, noStore, auth.loadUser, csrfGuard);
+  app.use('/api/services', catalogLimiter);
   app.use('/api/auth', auth.router);
-  app.use('/api/admin', adminLimiter, require('./routes/admin'));
+  app.use('/api/admin', adminGate, adminLimiter, require('./routes/admin'));
   app.use('/api/wallet', require('./routes/wallet'));
   app.use('/api', require('./routes/support'));
   app.use('/api', require('./routes/shop'));
@@ -170,7 +205,7 @@ function createApp() {
   // customer SPA any more. All of its data still comes from /api/admin/*, which returns 401
   // without a session and 403 without is_admin.
   const rootDir = staticDir || path.join(__dirname, '..', 'public');
-  app.get(['/admin', '/admin.html'], (_req, res) => {
+  app.get(['/admin', '/admin.html'], adminGate, (_req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('X-Robots-Tag', 'noindex, nofollow');
     res.sendFile(path.join(rootDir, 'admin.html'));

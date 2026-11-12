@@ -5,6 +5,7 @@ const jwt = require('jsonwebtoken');
 const rateLimit = require('express-rate-limit');
 const db = require('../db');
 const config = require('../config');
+const throttle = require('../throttle');
 const { HttpError, wrap } = require('../errors');
 
 const router = express.Router();
@@ -12,7 +13,8 @@ const COOKIE = 'token';
 const now = () => Math.floor(Date.now() / 1000);
 const DAY = 24 * 3600 * 1000;
 // Constant-cost comparison for unknown emails so login timing does not reveal which accounts exist.
-const DUMMY_HASH = bcrypt.hashSync('not-a-real-password', 10);
+const ROUNDS = config.bcryptRounds;
+const DUMMY_HASH = bcrypt.hashSync('not-a-real-password', ROUNDS);
 
 const BCRYPT_MAX_BYTES = 72; // bcrypt silently truncates beyond this
 
@@ -33,31 +35,25 @@ const limiter = rateLimit({
 });
 
 /** Per-account throttle so one IP cannot hammer many accounts (and vice versa). */
-const failures = new Map();
 const MAX_FAILURES = 6;
-const FAILURE_WINDOW_MS = 15 * 60 * 1000;
+const FAILURE_WINDOW_SEC = 15 * 60;
+const REGISTER_PER_HOUR = 8;
 
-function checkAccountThrottle(key) {
-  const entry = failures.get(key);
-  if (!entry) return;
-  if (Date.now() - entry.first > FAILURE_WINDOW_MS) {
-    failures.delete(key);
-    return;
-  }
-  if (entry.count >= MAX_FAILURES) {
-    const mins = Math.max(1, Math.ceil((FAILURE_WINDOW_MS - (Date.now() - entry.first)) / 60000));
+// Counters live in the database (see src/throttle.js) so a fresh lambda instance does not hand an
+// attacker a fresh budget; the in-process Map that used to live here was per-instance only.
+async function checkAccountThrottle(key) {
+  const state = await throttle.peek(key, FAILURE_WINDOW_SEC);
+  if (state.count >= MAX_FAILURES) {
+    const mins = Math.max(1, Math.ceil(state.retry_after / 60));
     throw new HttpError(429, `Too many failed attempts for this account. Try again in ${mins} minute(s).`);
   }
 }
 
-function noteFailure(key) {
-  const entry = failures.get(key);
-  if (!entry || Date.now() - entry.first > FAILURE_WINDOW_MS) failures.set(key, { count: 1, first: Date.now() });
-  else entry.count += 1;
-  if (failures.size > 5000) failures.clear(); // keep memory bounded
+async function noteFailure(key) {
+  await throttle.bump(key, FAILURE_WINDOW_SEC);
 }
 
-const clearFailures = (key) => failures.delete(key);
+const clearFailures = (key) => throttle.clear(key);
 
 function setSession(res, user) {
   const token = jwt.sign({ uid: user.id, tv: user.token_version || 0 }, config.jwtSecret, {
@@ -119,7 +115,13 @@ router.post(
     if (!EMAIL_RE.test(email) || email.length > 254) throw new HttpError(400, 'Enter a valid email address');
     assertPassword(password);
 
-    const hash = await bcrypt.hash(password, 10);
+    // Open registration is kept, but not unlimited: one IP cannot mint accounts in bulk.
+    const signups = await throttle.bump(`register|${req.ip}`, 3600);
+    if (signups.count > REGISTER_PER_HOUR) {
+      throw new HttpError(429, 'Too many sign-ups from here. Please try again later.');
+    }
+
+    const hash = await bcrypt.hash(password, ROUNDS);
     let id;
     try {
       const inserted = await db.one(
@@ -145,8 +147,8 @@ router.post(
   wrap(async (req, res) => {
     const email = normalizeEmail(req.body && req.body.email);
     const password = String((req.body && req.body.password) || '');
-    const key = `${req.ip}|${email}`;
-    checkAccountThrottle(key);
+    const key = `login|${req.ip}|${email}`;
+    await checkAccountThrottle(key);
 
     const row = await db.one('SELECT * FROM users WHERE email = $1', [email]);
     // Always run a hash comparison so response time does not reveal whether the email exists.
@@ -154,10 +156,22 @@ router.post(
     // Fail closed for accounts that have no password of their own (Google-only). password_set = 0
     // means the hash is a random placeholder, and a placeholder must never authenticate anyone.
     if (!row || !ok || !Number(row.password_set)) {
-      noteFailure(key);
+      await noteFailure(key);
       throw new HttpError(401, 'Incorrect email or password');
     }
-    clearFailures(key);
+    await clearFailures(key);
+
+    // Re-hash anything written under the old, cheaper cost. Silent: the caller is already in.
+    const cost = Number(String(row.password_hash).split('$')[2]);
+    if (Number.isFinite(cost) && cost < ROUNDS) {
+      try {
+        const upgraded = await bcrypt.hash(password.slice(0, BCRYPT_MAX_BYTES), ROUNDS);
+        await db.run('UPDATE users SET password_hash = $1 WHERE id = $2', [upgraded, row.id]);
+      } catch (err) {
+        console.warn('[auth] password rehash skipped:', err.message);
+      }
+    }
+
     setSession(res, row);
     res.json({ user: publicUser(row) });
   })
@@ -179,7 +193,7 @@ router.post(
     if (!firstPassword) {
       const ok = await bcrypt.compare(current.slice(0, BCRYPT_MAX_BYTES), row.password_hash);
       if (!ok) {
-        noteFailure(`${req.ip}|${row.email}`);
+        await noteFailure(`login|${req.ip}|${row.email}`);
         throw new HttpError(401, 'Current password is incorrect');
       }
       if (await bcrypt.compare(next.slice(0, BCRYPT_MAX_BYTES), row.password_hash)) {
@@ -187,7 +201,7 @@ router.post(
       }
     }
 
-    const hash = await bcrypt.hash(next, 10);
+    const hash = await bcrypt.hash(next, ROUNDS);
     await db.run(
       'UPDATE users SET password_hash = $1, password_set = 1, token_version = token_version + 1 WHERE id = $2',
       [hash, row.id]
@@ -299,7 +313,7 @@ router.get(
         // also invalidates whatever password was there. Without this, anyone could pre-register
         // a stranger's email with a password of their own and keep access after the real owner
         // signs in with Google (classic pre-hijack).
-        const unusable = await bcrypt.hash(crypto.randomBytes(32).toString('hex'), 10);
+        const unusable = await bcrypt.hash(crypto.randomBytes(32).toString('hex'), ROUNDS);
         await db.run(
           `UPDATE users SET google_sub = $1,
                             password_hash = CASE WHEN password_set = 1 THEN $2 ELSE password_hash END,
@@ -311,7 +325,7 @@ router.get(
         user = await db.one('SELECT * FROM users WHERE id = $1', [existing.id]);
       } else {
         // No usable password: sign-in happens through Google only.
-        const placeholder = await bcrypt.hash(crypto.randomBytes(32).toString('hex'), 10);
+        const placeholder = await bcrypt.hash(crypto.randomBytes(32).toString('hex'), ROUNDS);
         const inserted = await db.one(
           'INSERT INTO users (email, password_hash, google_sub, password_set, created_at) VALUES ($1,$2,$3,0,$4) RETURNING id',
           [email, placeholder, sub, now()]

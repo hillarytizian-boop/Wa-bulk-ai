@@ -1,7 +1,11 @@
+# Nothing here is secret, and nothing here is hidden.
+#
+# This file used to list /admin, /admin.html and /api/ as Disallowed. That is not protection: it
+# tells every scanner exactly where the console lives. The console and the API send
+# "X-Robots-Tag: noindex, nofollow" on the response instead, which actually keeps them out of
+# search results without drawing a map.
+
 User-agent: *
 Allow: /
-Disallow: /admin
-Disallow: /admin.html
-Disallow: /api/
 
 Sitemap: https://hilapanel.vercel.app/sitemap.xml

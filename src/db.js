@@ -140,6 +140,17 @@ const SCHEMA = [
     indexes: [['idx_favorites_user', 'user_id, service_id']],
   },
   {
+    // Shared fixed-window counters. Lives in the database so every serverless instance counts
+    // against the same budget - process memory is per-instance and was the hole in the old limiter.
+    name: 'rate_limits',
+    columns: [
+      ['key', 'text', { notNull: true, primaryKey: true }],
+      ['count', 'int', { notNull: true, default: 0 }],
+      ['window_start', 'int', { notNull: true, default: 0 }],
+    ],
+    indexes: [['idx_rate_limits_window', 'window_start']],
+  },
+  {
     name: 'audit_log',
     columns: [
       ['id', 'id'],

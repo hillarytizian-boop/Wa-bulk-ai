@@ -505,8 +505,16 @@ async function test(name, fn) {
         .on('error', reject);
     });
     assert.equal(robots.status, 200);
-    assert.match(robots.body, /Disallow: \/api\//);
-    assert.match(robots.body, /Disallow: \/admin/);
+    // Deliberate change: robots.txt no longer names /admin or /api/ - a Disallow line is a signpost,
+    // not a lock. Those surfaces send X-Robots-Tag: noindex instead, which is what actually keeps
+    // them out of search results.
+    assert.doesNotMatch(robots.body, /^\s*Disallow:/m);
+    assert.match(robots.body, /Allow: \//);
+
+    const panel = await call('/admin');
+    assert.equal(panel.status, 200);
+    assert.match(String(panel.headers.get('x-robots-tag') || ''), /noindex/);
+    assert.match(String(panel.headers.get('cache-control') || ''), /no-store/);
 
     const health = await call('/healthz');
     assert.deepEqual(health.data, { ok: true }); // no dialect, uptime or version

@@ -44,10 +44,17 @@ router.get('/meta', (_req, res) => {
   });
 });
 
-/** Public view of a service. Provider rates are NEVER included - only customer-facing KES prices. */
-function presentService(s, settings) {
+/**
+ * Public view of a service. Provider rates are NEVER included - only customer-facing KES prices
+ * (`rate_cents` below is the retail KES price per 1000 units, i.e. provider rate + markup + fee).
+ *
+ * Provider telemetry (reliability, drop rate) and the provider's own notes are internal: the
+ * storefront never renders them, so they are only included for an admin caller. Keeping them off
+ * the anonymous payload means a scraper cannot profile our upstream inventory.
+ */
+function presentService(s, settings, internal = false) {
   const def = getTypeDef(s.type);
-  return {
+  const out = {
     id: s.id,
     name: s.name,
     type: s.type,
@@ -63,9 +70,12 @@ function presentService(s, settings) {
     cancel: s.cancel,
     start_time: s.startTime,
     speed: s.speed,
-    drop_rate: s.dropRate,
-    reliability: s.reliability,
   };
+  if (internal) {
+    out.drop_rate = s.dropRate;
+    out.reliability = s.reliability;
+  }
+  return out;
 }
 
 // Catalog: search + category filter + pagination.
@@ -114,7 +124,7 @@ router.get(
 
     res.set('Cache-Control', 'public, max-age=60');
     res.json({
-      services: slice.map((s) => presentService(s, settings)),
+      services: slice.map((s) => presentService(s, settings, Boolean(req.user && req.user.is_admin))),
       platform: platform && platform !== 'all' ? platform : null,
       platforms: platforms.platformList(c.list),
       categories,
@@ -242,7 +252,7 @@ router.get(
       services: picks.map(({ service, score: sc }) => {
         const p = platforms.platformOf(service.category);
         return {
-          ...presentService(service, settings),
+          ...presentService(service, settings, Boolean(req.user && req.user.is_admin)),
           platform: { key: p.key, name: p.name, color: p.color },
           orders_30d: orderCount.get(Number(service.id)) || 0,
           score: sc,
@@ -257,7 +267,12 @@ router.get(
   wrap(async (req, res) => {
     const s = await catalog.getService(req.params.id);
     if (!s) throw new HttpError(404, 'Service not found');
-    res.json({ service: { ...presentService(s, pricing.getSettings()), description: s.description } });
+    res.json({
+      service: {
+        ...presentService(s, pricing.getSettings(), Boolean(req.user && req.user.is_admin)),
+        description: s.description,
+      },
+    });
   })
 );
 
