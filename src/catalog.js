@@ -44,11 +44,9 @@ async function load(force = false) {
   }
 }
 
-// A forced refresh costs a supplier round-trip (~6s on a slow day). Unknown ids arrive from stale
-// bookmarks and fat-fingered links, so remember the answer: one refresh a minute is enough to pick up
-// genuinely new services, and a bad id then fails in milliseconds instead of holding the request.
-let lastForce = 0;
-const FORCE_EVERY_MS = 60 * 1000;
+// An unknown id is normally a stale bookmark or a typo. Asking the supplier again to be sure costs a
+// round-trip (~7s on a slow day), so it is only worth doing when the catalogue we hold is itself old.
+const STALE_ENOUGH_MS = 60 * 1000;
 
 async function getService(id) {
   const numeric = Number(id);
@@ -56,9 +54,9 @@ async function getService(id) {
   const c = await load();
   const hit = c.byId.get(numeric);
   if (hit) return hit;
-  if (Date.now() - lastForce < FORCE_EVERY_MS) return null;
-  // Catalog may be stale: refresh once before declaring the service missing.
-  lastForce = Date.now();
+  // The catalogue was refreshed a moment ago (load() refreshes when its TTL expires), so the id
+  // really is not on offer. Answer at once instead of holding the click for a supplier round-trip.
+  if (Date.now() - Number(c.at || 0) < STALE_ENOUGH_MS) return null;
   const fresh = await load(true);
   return fresh.byId.get(numeric) || null;
 }
