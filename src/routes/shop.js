@@ -37,6 +37,8 @@ router.get('/meta', (_req, res) => {
     fields: FIELD_META,
     // "text me on WhatsApp" - the number lives in config so it can change without a redeploy
     support: {
+      termsVersion: config.terms.version,
+      termsUpdated: config.terms.updated,
       phone: config.support.phone,
       whatsapp: config.support.whatsapp,
       whatsappUrl: config.support.whatsapp ? `https://wa.me/${config.support.whatsapp}` : null,
@@ -301,9 +303,25 @@ router.get(
   })
 );
 
+// Placing an order requires having accepted the current Terms & Conditions. Enforced here as
+// well as in the app, because a client can skip the acceptance screen.
+const termsOk = (user) =>
+  Boolean(Number(user.is_admin)) ||
+  (Boolean(Number(user.terms_accepted_at)) && String(user.terms_version || '') === config.terms.version);
+
+function requireTerms(req, res, next) {
+  if (termsOk(req.user)) return next();
+  return res.status(403).json({
+    error: 'Please accept the Terms & Conditions before ordering',
+    code: 'terms_required',
+    terms_version: config.terms.version,
+  });
+}
+
 router.post(
   '/orders',
   requireAuth,
+  requireTerms,
   orderLimiter,
   wrap(async (req, res) => {
     const order = await orders.placeOrder(req.user.id, req.body || {});

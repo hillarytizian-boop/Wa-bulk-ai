@@ -61,6 +61,13 @@ module.exports = {
   minTopupKes: num(process.env.MIN_TOPUP_KES, 50),
   maxTopupKes: num(process.env.MAX_TOPUP_KES, 150000),
 
+  // Terms & Conditions. Bump TERMS_VERSION whenever the wording changes: every account that
+  // accepted an older version is asked to accept the new one before it can order again.
+  terms: {
+    version: process.env.TERMS_VERSION || '2026-11-07',
+    updated: process.env.TERMS_UPDATED || '7 November 2026',
+  },
+
   admin: {
     email: process.env.ADMIN_EMAIL || '',
     password: process.env.ADMIN_PASSWORD || '',

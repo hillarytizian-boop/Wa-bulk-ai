@@ -25,6 +25,10 @@ const SCHEMA = [
       // 0 means "no usable password set" (Google-only account). Used to stop account
       // pre-hijacking: registering someone's email must not survive them signing in with Google.
       ['password_set', 'flag', { notNull: true, default: 1 }],
+      // Terms & Conditions acceptance. 0 means "never accepted" - such an account is held at the
+      // acceptance screen and cannot order until it accepts the current version.
+      ['terms_accepted_at', 'int', { notNull: true, default: 0 }],
+      ['terms_version', 'text'],
       ['created_at', 'int', { notNull: true }],
     ],
   },
@@ -172,6 +176,19 @@ const TYPES = {
 
 const quoteDefault = (value) => (typeof value === 'number' ? String(value) : `'${String(value).replace(/'/g, "''")}'`);
 
+// Columns added after a table shipped. CREATE TABLE IF NOT EXISTS cannot add them to an existing
+// database, so these run as ALTER statements and are tolerantly skipped when already present.
+const ADDITIONS = [
+  ['users', 'terms_accepted_at', 'BIGINT', '0'],
+  ['users', 'terms_version', 'TEXT', "''"],
+];
+
+function renderAdditions() {
+  return ADDITIONS.map(
+    ([table, column, type, dflt]) => `ALTER TABLE ${table} ADD COLUMN ${column} ${type} DEFAULT ${dflt};`
+  );
+}
+
 function renderSchema(dialect) {
   const t = TYPES[dialect];
   const out = [];
@@ -268,6 +285,13 @@ function makeSqlite(config) {
     tx,
     initSchema: async () => {
       db.exec(renderSchema('sqlite'));
+      for (const sql of renderAdditions()) {
+        try {
+          db.exec(sql);
+        } catch (err) {
+          if (!/duplicate column name/i.test(err.message)) throw err;
+        }
+      }
     },
     close: async () => db.close(),
     raw: db,
@@ -368,6 +392,13 @@ function makePostgres(databaseUrl) {
     tx,
     initSchema: async () => {
       await lazyClient.query(renderSchema('postgres'));
+      for (const sql of renderAdditions()) {
+        try {
+          await lazyClient.query(sql);
+        } catch (err) {
+          if (err.code !== '42701') throw err; // 42701 = duplicate_column
+        }
+      }
     },
     resolve: () => ensurePool(),
     close: async () => {

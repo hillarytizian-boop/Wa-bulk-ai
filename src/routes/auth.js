@@ -86,6 +86,9 @@ const requireAuth = (req, res, next) => (req.user ? next() : res.status(401).jso
 const requireAdmin = (req, res, next) =>
   req.user && req.user.is_admin ? next() : res.status(403).json({ error: 'Admin access required' });
 
+const termsAccepted = (u) =>
+  Boolean(Number(u.terms_accepted_at)) && String(u.terms_version || '') === config.terms.version;
+
 const publicUser = (u) => ({
   id: u.id,
   email: u.email,
@@ -93,6 +96,12 @@ const publicUser = (u) => ({
   balance_cents: u.balance_cents,
   password_set: u.password_set === undefined ? true : Boolean(Number(u.password_set)),
   google: Boolean(u.google_sub),
+  // The storefront gates ordering on this. An admin is never held at the gate.
+  terms: {
+    accepted: Boolean(u.is_admin) || termsAccepted(u),
+    version: config.terms.version,
+    required_version: config.terms.version,
+  },
 });
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
@@ -114,6 +123,11 @@ router.post(
     const password = req.body && req.body.password;
     if (!EMAIL_RE.test(email) || email.length > 254) throw new HttpError(400, 'Enter a valid email address');
     assertPassword(password);
+    // Acceptance has to be explicit and is enforced here, not only in the browser: a client that
+    // skips the checkbox must not get an account.
+    if (req.body.accept_terms !== true) {
+      throw new HttpError(400, 'You must accept the Terms & Conditions to create an account');
+    }
 
     // Open registration is kept, but not unlimited: one IP cannot mint accounts in bulk.
     const signups = await throttle.bump(`register|${req.ip}`, 3600);
@@ -125,8 +139,8 @@ router.post(
     let id;
     try {
       const inserted = await db.one(
-        'INSERT INTO users (email, password_hash, password_set, created_at) VALUES ($1,$2,1,$3) RETURNING id',
-        [email, hash, now()]
+        'INSERT INTO users (email, password_hash, password_set, terms_accepted_at, terms_version, created_at) VALUES ($1,$2,1,$3,$4,$5) RETURNING id',
+        [email, hash, now(), config.terms.version, now()]
       );
       id = inserted.id;
     } catch (err) {
@@ -226,6 +240,26 @@ router.post('/logout-all', requireAuth, wrap(async (req, res) => {
 router.get('/me', (req, res) => {
   res.json({ user: req.user ? publicUser(req.user) : null });
 });
+
+// Record acceptance of the current Terms & Conditions. Idempotent, and re-accepting after a
+// version bump is the same call.
+router.post(
+  '/accept-terms',
+  requireAuth,
+  wrap(async (req, res) => {
+    const accepted = Number(req.user.terms_accepted_at)
+      && String(req.user.terms_version || '') === config.terms.version;
+    if (!accepted) {
+      await db.run('UPDATE users SET terms_accepted_at = $1, terms_version = $2 WHERE id = $3', [
+        now(),
+        config.terms.version,
+        req.user.id,
+      ]);
+    }
+    const fresh = await db.one('SELECT * FROM users WHERE id = $1', [req.user.id]);
+    res.json({ user: publicUser(fresh), version: config.terms.version });
+  })
+);
 
 // ---------------------------------------------------------------- Google sign-in
 // OAuth 2.0 authorisation-code flow. Enabled only when GOOGLE_CLIENT_ID and

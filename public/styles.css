@@ -565,6 +565,23 @@ tbody tr:last-child td { border-bottom: none; }
 .finder-side { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; }
 .finder-alts { display: flex; flex-wrap: wrap; gap: 8px; }
 
+/* Terms & Conditions */
+.terms-block { padding: 12px 0; border-bottom: 1px solid var(--line-soft); }
+.terms-block:first-child { padding-top: 0; }
+.terms-block:last-of-type { border-bottom: 0; padding-bottom: 0; }
+.terms-block h3 { margin: 0 0 6px; }
+.terms-block p { margin: 0; color: var(--muted); font-size: .84rem; line-height: 1.5; }
+.agree {
+  display: flex; align-items: flex-start; gap: 10px; margin: 14px 0 4px;
+  font-size: .8rem; line-height: 1.42; color: var(--muted); cursor: pointer;
+  text-transform: none; letter-spacing: 0;
+}
+.agree a { color: var(--text); text-decoration: underline; text-underline-offset: 2px; }
+.agree-box {
+  flex: 0 0 18px; width: 18px; height: 18px; margin: 1px 0 0; padding: 0;
+  accent-color: var(--text); border-radius: 4px;
+}
+
 /* goal switcher inside the finder */
 .finder-goals { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 2px; }
 .finder-goals[hidden] { display: none; }

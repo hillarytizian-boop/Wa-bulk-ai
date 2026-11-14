@@ -216,7 +216,7 @@ async function test(name, fn) {
     const anon = await call('/api/admin/stats');
     assert.equal(anon.status, 401);
 
-    const customer = await call('/api/auth/register', { method: 'POST', body: { email: 'cust@panel.test', password: 'longpassword1' } });
+    const customer = await call('/api/auth/register', { method: 'POST', body: { email: 'cust@panel.test', password: 'longpassword1', accept_terms: true } });
     const customerCookie = (customer.cookie || '').split(';')[0];
     const forbidden = await call('/api/admin/stats', { cookie: customerCookie });
     assert.equal(forbidden.status, 403);
@@ -437,7 +437,7 @@ async function test(name, fn) {
   await test('the PayHero diagnostic is admin-only and never returns a secret', async () => {
     const anon = await call('/api/admin/payhero/diagnose');
     assert.equal(anon.status, 401);
-    const user = await call('/api/auth/register', { method: 'POST', body: { email: `diag.${Date.now()}@example.com`, password: 'Password!123' } });
+    const user = await call('/api/auth/register', { method: 'POST', body: { email: `diag.${Date.now()}@example.com`, password: 'Password!123', accept_terms: true } });
     const cookie = (user.cookie || '').split(';')[0];
     const asUser = await call('/api/admin/payhero/diagnose', { cookie });
     assert.equal(asUser.status, 403);
@@ -486,6 +486,78 @@ async function test(name, fn) {
     assert.match(String(bad.data.error), /whole number between KES/i);
     // Provider errors must stay opaque: the provider's own text never reaches the browser.
     assert.doesNotMatch(String(bad.data.error), /provider-secret-key-do-not-leak/);
+  });
+
+  await test('an account cannot be created without accepting the terms', async () => {
+    const refused = await call('/api/auth/register', {
+      method: 'POST',
+      body: { email: 'no-terms@panel.test', password: 'longpassword1' },
+    });
+    assert.equal(refused.status, 400);
+    assert.match(String(refused.data.error), /Terms & Conditions/);
+    const row = raw.prepare('SELECT id FROM users WHERE email = ?').get('no-terms@panel.test');
+    assert.equal(row, undefined, 'no user row was written');
+
+    // and a truthy-but-wrong value is still a refusal
+    const sneaky = await call('/api/auth/register', {
+      method: 'POST',
+      body: { email: 'no-terms@panel.test', password: 'longpassword1', accept_terms: 'yes' },
+    });
+    assert.equal(sneaky.status, 400);
+  });
+
+  await test('accepting at sign-up is recorded with the current version', async () => {
+    const config = require('../src/config');
+    const created = await call('/api/auth/register', {
+      method: 'POST',
+      body: { email: 'with-terms@panel.test', password: 'longpassword1', accept_terms: true },
+    });
+    assert.equal(created.status, 201);
+    assert.equal(created.data.user.terms.accepted, true);
+    assert.equal(created.data.user.terms.version, config.terms.version);
+
+    const row = raw.prepare('SELECT terms_accepted_at, terms_version FROM users WHERE email = ?').get('with-terms@panel.test');
+    assert.ok(Number(row.terms_accepted_at) > 0, 'timestamp stored');
+    assert.equal(row.terms_version, config.terms.version);
+  });
+
+  await test('an account that never accepted is held at the gate and refused an order', async () => {
+    const config = require('../src/config');
+    // An account created outside the sign-up form - e.g. a first Google sign-in - starts unaccepted.
+    const hash = require('bcryptjs').hashSync('longpassword1', 10);
+    raw.prepare('INSERT INTO users (email, password_hash, password_set, created_at) VALUES (?,?,1,?)')
+      .run('google-style@panel.test', hash, Math.floor(Date.now() / 1000));
+
+    const login = await loginAs('google-style@panel.test', 'longpassword1');
+    assert.equal(login.status, 200);
+    assert.equal(login.data.user.terms.accepted, false);
+    const session = login.session;
+
+    const blocked = await call('/api/orders', {
+      method: 'POST',
+      cookie: session,
+      body: { service_id: 1, link: 'https://instagram.com/p/x', quantity: 100 },
+    });
+    assert.equal(blocked.status, 403);
+    assert.equal(blocked.data.code, 'terms_required');
+
+    const accepted = await call('/api/auth/accept-terms', { method: 'POST', cookie: session, body: {} });
+    assert.equal(accepted.status, 200);
+    assert.equal(accepted.data.user.terms.accepted, true);
+    assert.equal(accepted.data.version, config.terms.version);
+
+    const again = await call('/api/auth/accept-terms', { method: 'POST', cookie: session, body: {} });
+    assert.equal(again.status, 200, 'accepting twice is harmless');
+  });
+
+  await test('a version bump asks an existing customer to accept again', () => {
+    const config = require('../src/config');
+    raw.prepare('UPDATE users SET terms_version = ? WHERE email = ?').run('2020-01-01', 'with-terms@panel.test');
+    const row = raw.prepare('SELECT terms_accepted_at, terms_version, is_admin FROM users WHERE email = ?').get('with-terms@panel.test');
+    assert.notEqual(row.terms_version, config.terms.version);
+    const { publicUser } = require('../src/routes/auth');
+    assert.equal(publicUser(row).terms.accepted, false, 'stale acceptance is not acceptance');
+    assert.equal(publicUser({ ...row, is_admin: 1 }).terms.accepted, true, 'the admin is never gated');
   });
 
   await test('the API hides itself: noindex header, robots.txt, bare 404s, no stack traces', async () => {

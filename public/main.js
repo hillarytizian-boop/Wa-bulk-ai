@@ -13,6 +13,40 @@
 
   const view = document.getElementById('view');
 
+  // Public page: readable without an account, and linked from every acceptance checkbox.
+  function termsView() {
+    stopTimer();
+    fill(view,
+      pageHead('Terms & Conditions', `Version ${(state.meta && state.meta.termsVersion) || '2026-11-07'} \u00b7 updated ${TERMS_UPDATED}`),
+      h('div', { class: 'card' },
+        TERMS.map((t) => h('div', { class: 'terms-block' }, h('h3', null, t.h), h('p', null, t.p))),
+        h('p', { class: 'hint' }, 'By creating an account or ordering on smmpanel you accept these terms, including section 4: delivery depends on third-party vendors and delivered engagement can drop.')));
+
+    if (state.user && !state.user.terms.accepted) {
+      const accept = h('button', { class: 'btn block' }, 'I accept the Terms & Conditions');
+      accept.addEventListener('click', async () => {
+        accept.disabled = true;
+        try {
+          await acceptTerms();
+        } catch (err) { toast(err.message, true); accept.disabled = false; }
+      });
+      view.append(h('div', { class: 'card' }, h('h2', null, 'One more step'),
+        h('p', { class: 'muted' }, 'Accept the terms to keep ordering.'), accept));
+    }
+  }
+
+  /** Record acceptance server-side, then let the customer carry on where they were. */
+  async function acceptTerms() {
+    const { user } = await api('/auth/accept-terms', { method: 'POST', body: { version: (state.meta && state.meta.termsVersion) || '' } });
+    state.user = user;
+    renderChrome();
+    toast('Thanks - terms accepted.');
+    const next = state.afterTerms || '#/';
+    state.afterTerms = null;
+    if (location.hash === next) route();
+    else location.hash = next;
+  }
+
   // ------------------------------------------------------------------ helpers
   function h(tag, props, ...kids) {
     const el = document.createElement(tag);
@@ -230,6 +264,53 @@
 
   const stopTimer = () => { if (state.timer) clearInterval(state.timer); state.timer = null; };
   const stale = () => state.route !== currentRoute().name.split('/')[0];
+  // ------------------------------------------------------------------ terms & conditions
+  // Same text feeds the public page (#/terms), the sign-up checkbox and the acceptance gate,
+  // so there is exactly one wording to keep the server-side version in step with.
+  const TERMS_UPDATED = '7 November 2026';
+  const TERMS = [
+    {
+      h: '1. Who we are and what this is',
+      p: 'smmpanel is a reseller of social-media marketing services: followers, likes, views, comments, subscribers and similar engagement. We do not run the accounts or platforms you order for, and we are not affiliated with, endorsed by or sponsored by Instagram, TikTok, YouTube, X, Facebook, Telegram, Spotify or any other platform named on the site.',
+    },
+    {
+      h: '2. Your account',
+      p: 'You need an account to order. Keep your password to yourself: anything ordered from your account is treated as ordered by you. One account per person or business. We may suspend an account that is used to defraud us, to abuse a provider, or to break these terms, and any remaining balance stays on the account pending review.',
+    },
+    {
+      h: '3. Prices, fees and payment',
+      p: 'All prices are in Kenyan Shillings (KES) and are shown before you confirm an order. Each order carries a fixed service fee, shown in the order summary. Prices are per 1,000 units unless the service says otherwise. Top-ups are collected by M-Pesa through our payment provider; your balance is credited only after M-Pesa confirms the payment, and a delayed confirmation can take a few minutes. Balances are for buying services, are not transferable between accounts, and cannot be cashed out.',
+    },
+    {
+      h: '4. Delivery times are estimates, and services can drop',
+      p: 'Delivery is carried out by third-party suppliers ("vendors"), not by us. Start times and speeds shown on a service are their estimates, not commitments, and delays happen. Engagement delivered by a vendor can also fall away after it is delivered: followers, likes, views and comments may drop days or weeks later, and how much drops, and whether it comes back, depends entirely on the vendor and on the platform\u2019s own moderation. We cannot guarantee that any specific number is retained, and we cannot promise a service will stay available or at the same price, because our vendors change their offers without notice. Where a service lists "Refill", the vendor will top the order back up within the stated refill window; where it does not, a drop after delivery is not covered.',
+    },
+    {
+      h: '5. Refunds',
+      p: 'If an order is not delivered at all, or is delivered only in part, tell us within 7 days through Support and we refund the missing part to your smmpanel balance. Once a service has been delivered in full it is finished, and a later drop is not a refund event unless the service offers a refill. We do not refund to M-Pesa; refunds are credited to your balance. Do not open a chargeback with your bank or M-Pesa instead of contacting us \u2014 we will suspend the account while it is disputed.',
+    },
+    {
+      h: '6. What you may not order',
+      p: 'Do not use the panel for anything illegal or deceptive: no content that infringes copyright, no harassment, no orders for accounts you do not own or manage, no fake engagement intended to mislead advertisers or voters, and no reselling of our services through another panel without our written permission. Orders that break this can be cancelled without refund, and the account can be closed.',
+    },
+    {
+      h: '7. Availability and changes',
+      p: 'The panel is provided as-is. We may add, change, pause or withdraw any service at any time, including when a vendor withdraws it, and we may change these terms. If we change them, the new version is dated and published at #/terms, and you will be asked to accept it the next time you sign in before you can order again.',
+    },
+    {
+      h: '8. Liability',
+      p: 'To the extent the law allows, our total liability for any order is limited to what you paid for that order. We are not liable for a platform removing content, restricting an account, or changing its rules or algorithms, and we are not liable for indirect losses such as lost sales or lost reach.',
+    },
+    {
+      h: '9. Your data',
+      p: 'We store your email address, your password (hashed, never in plain text), your orders, ticket messages and payment references from M-Pesa. We do not receive or store your M-Pesa PIN. The links you submit with an order are sent to the vendor that fulfils it, because that is the only way to deliver the order.',
+    },
+    {
+      h: '10. Contact',
+      p: 'Questions about these terms, an order or a refund go through Support in the app, or the WhatsApp line on the Help page. That is also the fastest route to a human.',
+    },
+  ];
+
   const requireLogin = () => { if (state.user) return true; location.hash = '#/login'; return false; };
 
   const GROUPS = {
@@ -332,6 +413,7 @@
     const links = [['', 'Dashboard'], ['order', 'New order'], ['trending', 'Trending'], ['services', 'Pricing'], ['mass', 'Mass order']];
     if (state.user) links.push(['orders', 'Orders'], ['wallet', 'Wallet'], ['support', 'Support'], ['help', 'Help / FAQ'], ['password', 'Password']);
     else links.push(['help', 'Help / FAQ']);
+    links.push(['terms', 'Terms & Conditions']);
     const kids = links.map(([r, label]) => h('a', { href: `#/${r}`, class: route === r ? 'active' : '' }, label));
     // The support line sits in the menu itself, not buried behind a ticket form.
     kids.push(h('a', {
@@ -1257,11 +1339,23 @@
     const err = h('div', { class: 'errtext' }, AUTH_ERRORS[params.error] || '');
     const btn = h('button', { class: 'btn block' }, isLogin ? 'Log in' : 'Create account');
 
+    const agree = h('input', { type: 'checkbox', id: 'agreeTerms', class: 'agree-box' });
+    const agreeRow = h('label', { class: 'agree', for: 'agreeTerms' }, agree,
+      h('span', null, 'I accept the ', h('a', { href: '#/terms', target: '_blank', rel: 'noopener' }, 'Terms & Conditions'),
+        ', including that services are delivered by third-party vendors and can drop.'));
+
     const submit = async () => {
       err.textContent = '';
+      if (!isLogin && !agree.checked) {
+        err.textContent = 'Tick the box to accept the Terms & Conditions first.';
+        return;
+      }
       btn.disabled = true;
       try {
-        const { user } = await api(`/auth/${isLogin ? 'login' : 'register'}`, { method: 'POST', body: { email: email.value.trim(), password: password.value } });
+        const body = isLogin
+          ? { email: email.value.trim(), password: password.value }
+          : { email: email.value.trim(), password: password.value, accept_terms: true };
+        const { user } = await api(`/auth/${isLogin ? 'login' : 'register'}`, { method: 'POST', body });
         state.user = user;
         await loadFavorites();
         renderChrome();
@@ -1282,6 +1376,7 @@
         h('div', { class: 'or' }, 'or use your email'),
         h('label', null, 'Email'), email,
         h('label', null, 'Password'), password,
+        isLogin ? null : agreeRow,
         err, btn,
         h('p', { class: 'hint' }, isLogin ? 'No account yet? ' : 'Already registered? ',
           h('a', { href: isLogin ? '#/register' : '#/login' }, isLogin ? 'Create one' : 'Log in')),
@@ -1551,6 +1646,9 @@
   }
 
   // ------------------------------------------------------------------ router
+  /** The raw hash, including the '#', so a gate can send the customer back where they were. */
+  const rawHash = () => (location.hash && location.hash.startsWith('#') ? location.hash : '#/');
+
   function currentRoute() {
     const raw = (location.hash || '#/').slice(1);
     const [pathPart, queryPart] = raw.split('?');
@@ -1568,6 +1666,15 @@
     window.scrollTo({ top: 0 });
     fill(view);
     if (name === 'admin') { location.replace('/admin'); return; }
+
+    // Acceptance gate. An account that has not accepted the current terms can still read the
+    // terms, the help page and sign out - nothing else. state.afterTerms remembers where it was
+    // heading so accepting drops the customer back there.
+    const gateExempt = ['terms', 'help', 'login', 'register'].includes(name);
+    if (state.user && state.user.terms && !state.user.terms.accepted && !gateExempt) {
+      state.afterTerms = rawHash() || '#/';
+      return termsView();
+    }
     if (name.startsWith('support/')) {
       state.route = 'support';
       renderChrome();
@@ -1586,6 +1693,7 @@
       case 'support': return supportView(params);
       case 'password': return passwordView();
       case 'help': return helpView();
+      case 'terms': return termsView();
       case 'wallet': return walletView();
       default:
         return fill(view, pageHead('Not found'), h('p', { class: 'muted' }, 'That page does not exist.'),
