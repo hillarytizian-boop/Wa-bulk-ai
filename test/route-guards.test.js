@@ -220,6 +220,14 @@ const PUBLIC = new Map([
     assert.equal(ok.status, 200);
   });
 
+  await test('the storefront is told which terms version is current', async () => {
+    const config = require('../src/config');
+    const res = await call('/api/meta');
+    assert.equal(res.status, 200);
+    assert.equal(res.data.termsVersion, config.terms.version);
+    assert.ok(res.data.termsUpdated, 'the terms page needs a date to show');
+  });
+
   await test('passwords are hashed with the configured bcrypt cost, defaulting to 12', () => {
     const config = require('../src/config');
     assert.equal(config.bcryptRounds, Number(process.env.BCRYPT_ROUNDS), 'this suite pins the cost');

@@ -35,10 +35,11 @@ router.get('/meta', (_req, res) => {
     // changes on every deploy; the SPA polls /meta to offer "an app update is ready"
     build: process.env.VERCEL_GIT_COMMIT_SHA || process.env.VERCEL_DEPLOYMENT_ID || 'dev',
     fields: FIELD_META,
+    // Which Terms & Conditions version is current, so the app can label #/terms and date it.
+    termsVersion: config.terms.version,
+    termsUpdated: config.terms.updated,
     // "text me on WhatsApp" - the number lives in config so it can change without a redeploy
     support: {
-      termsVersion: config.terms.version,
-      termsUpdated: config.terms.updated,
       phone: config.support.phone,
       whatsapp: config.support.whatsapp,
       whatsappUrl: config.support.whatsapp ? `https://wa.me/${config.support.whatsapp}` : null,
