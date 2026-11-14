@@ -188,6 +188,7 @@ function createApp() {
   app.use('/api/auth', auth.router);
   app.use('/api/admin', adminGate, adminLimiter, require('./routes/admin'));
   app.use('/api/wallet', require('./routes/wallet'));
+  app.use('/api', require('./routes/events').router);
   app.use('/api', require('./routes/support'));
   app.use('/api', require('./routes/shop'));
   app.use('/api', (_req, res) => res.status(404).json({ error: 'Not found' }));
@@ -210,6 +211,10 @@ function createApp() {
     res.setHeader('X-Robots-Tag', 'noindex, nofollow');
     res.sendFile(path.join(rootDir, 'admin.html'));
   });
+
+  // Crawler-facing pages (one per search phrase) and the dynamic sitemap. Mounted before the
+  // static handler so /sitemap.xml and /p/* are generated, not read off disk.
+  app.use(require('./routes/pages').router);
 
   app.use(
     express.static(rootDir, {

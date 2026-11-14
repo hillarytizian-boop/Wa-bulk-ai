@@ -7,6 +7,7 @@
 // Money is credited in KES cents: amount_kes * 100. No FX conversion happens here.
 const crypto = require('crypto');
 const db = require('./db');
+const mailer = require('./mailer');
 const config = require('./config');
 const { HttpError } = require('./errors');
 
@@ -186,8 +187,22 @@ async function credit(topupId, receipt, paidKes) {
       `M-Pesa KES ${creditedKes}${receipt ? ` (${receipt})` : ''}`,
       now(),
     ]);
-    return true;
+    return { creditedKes, userId: row.user_id };
   });
+}
+
+/** Fire-and-forget receipt email after a credit. The money is already in the wallet. */
+async function receiptEmail(userId, creditedKes) {
+  try {
+    const u = await db.one('SELECT email, balance_cents FROM users WHERE id = $1', [userId]);
+    if (!u || !u.email) return;
+    await mailer.paymentReceived(u.email, {
+      amountKes: creditedKes,
+      balanceKes: Math.round(Number(u.balance_cents) / 100).toLocaleString('en-KE'),
+    });
+  } catch (err) {
+    console.warn('[mpesa] receipt email skipped:', err.message);
+  }
 }
 
 /** Confirm one pending top-up with PayHero's status API, then credit it once. */
@@ -210,7 +225,8 @@ async function reconcileTopup(topupId, receipt) {
       console.warn(`[payhero] topup ${topupId} reports currency ${result.currency}; not crediting`);
       return 'pending';
     }
-    await credit(topupId, receipt || result.receipt, result.amountKes);
+    const done = await credit(topupId, receipt || result.receipt, result.amountKes);
+    if (done) receiptEmail(done.userId, done.creditedKes).catch(() => {});
     return 'paid';
   }
   // Give the customer 30 minutes to finish the prompt before writing the attempt off.

@@ -9,6 +9,7 @@ const config = require('./config');
 const smm = require('./smm');
 const catalog = require('./catalog');
 const pricing = require('./pricing');
+const mailer = require('./mailer');
 const { HttpError } = require('./errors');
 const { usdToMicros, microsToUsd, ceilScaled } = require('./money');
 const { getTypeDef, countLines } = require('./serviceTypes');
@@ -179,7 +180,15 @@ async function placeOrder(userId, input) {
 }
 
 // ---------------------------------------------------------------- submission
-const orderSettings = (order) => ({ markup: order.markup, kesPerUsd: order.kes_per_usd, feeCents: Number(order.fee_cents) });
+// The order keeps the markup / rate / fee it was sold at, so a later price change cannot rewrite
+// history. The percentage margin is not stored per order (yet), so reconciliation uses the current
+// one; the flat fee in `fee_cents` still caps the difference.
+const orderSettings = (order) => ({
+  markup: order.markup,
+  kesPerUsd: order.kes_per_usd,
+  feeCents: Number(order.fee_cents),
+  marginPct: pricing.getSettings().marginPct,
+});
 
 /** Re-price the order from the provider's authoritative "charged" amount. */
 async function reconcileCharged(orderId, chargedUsd) {
@@ -308,6 +317,7 @@ async function syncOrder(orderId) {
   );
 
   const fresh = await getOrder(order.id);
+  notifyStatus(order, fresh);
   if (status === 'completed') {
     await db.run('UPDATE orders SET settled = 1 WHERE id = $1', [fresh.id]);
   } else if (status === 'canceled' || status === 'refunded') {
@@ -318,6 +328,34 @@ async function syncOrder(orderId) {
     await settlePartial(fresh.id, remains, res);
   }
   return getOrder(order.id);
+}
+
+// Status changes worth an email. Everything else (pending -> in progress) is visible in the app and
+// would just be noise in the inbox.
+const NOTIFIABLE = new Set(['completed', 'partial', 'canceled', 'refunded', 'failed']);
+const STATUS_WORDS = {
+  completed: 'completed',
+  partial: 'partially delivered - the rest was refunded',
+  canceled: 'canceled - you have been refunded',
+  refunded: 'refunded',
+  failed: 'failed - you have been refunded',
+};
+
+/** Best-effort customer email on a meaningful status change. Never throws, never blocks the caller. */
+function notifyStatus(before, after) {
+  if (!before || !after || before.status === after.status || !NOTIFIABLE.has(after.status)) return;
+  Promise.resolve()
+    .then(async () => {
+      const u = await db.one('SELECT email FROM users WHERE id = $1', [after.user_id]);
+      if (!u || !u.email) return;
+      await mailer.orderUpdate(u.email, {
+        id: after.id,
+        name: after.service_name,
+        status: STATUS_WORDS[after.status] || after.status,
+        note: after.status === 'partial' && after.remains != null ? `${after.remains} units were not delivered.` : '',
+      });
+    })
+    .catch((err) => console.warn('[orders] status email skipped:', err.message));
 }
 
 async function settleFull(orderId, note) {

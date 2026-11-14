@@ -1,10 +1,17 @@
 // KES pricing.
 //
-//   customer price = (provider USD rate x (1 + markup) x KES_PER_USD) + FEE_KES
+//   customer price = provider cost in KES + max(FEE_KES, margin_pct x provider cost in KES)
 //
-// The +FEE_KES applies to every price on the site: the per-1000 rate in the catalog, the dynamic
-// order form and the order total. Order total for per-1000 services is
-// (rate_kes + fee) x quantity / 1000; flat/package services are priced as rate_kes + fee per order.
+// Two levers, in this order:
+//   * FEE_KES is the floor: every order carries at least this much gross margin, so a KSh 5 order
+//     never loses money to the M-Pesa and provider minimums.
+//   * margin_pct (default 20%) takes over on larger orders, where a flat fee would be an
+//     unprofitable ~2% of the ticket. Gross = max(fee, pct x cost).
+// A legacy `markup` multiplier is still honoured (it multiplies the provider cost before the fee /
+// percentage is applied) so an existing setting keeps working after a deploy.
+//
+// Order total for per-1000 services is (rate_kes + gross) x quantity / 1000; flat/package services
+// are priced as rate_kes + gross per order.
 //
 // Settings live in the `settings` table and are cached in memory: reads are synchronous (pure
 // integer maths over the cached values), writes refresh the cache. `ensureSettings()` must resolve
@@ -18,9 +25,11 @@ const DEFAULTS = {
   markup: config.pricing.markup,
   kes_per_usd: config.pricing.kesPerUsd,
   fee_kes: config.pricing.feeKes,
+  // 20% of the provider cost is the target margin; FEE_KES is the floor per order.
+  margin_pct: config.pricing.marginPct,
 };
 
-let cache = null; // { markup, kesPerUsd, feeKes, feeCents }
+let cache = null; // { markup, kesPerUsd, feeKes, feeCents, marginPct }
 let cacheAt = 0;
 let loading = null;
 // Settings are re-read once a minute, so a price change made in the admin console (or straight in
@@ -31,7 +40,11 @@ function toSettings(values) {
   const markup = Number.isFinite(values.markup) && values.markup >= 0 ? values.markup : DEFAULTS.markup;
   const kesPerUsd = Number.isFinite(values.kes_per_usd) && values.kes_per_usd > 0 ? values.kes_per_usd : DEFAULTS.kes_per_usd;
   const feeKes = Number.isFinite(values.fee_kes) && values.fee_kes >= 0 ? values.fee_kes : DEFAULTS.fee_kes;
-  return { markup, kesPerUsd, feeKes, feeCents: toCents(feeKes) };
+  const marginPct =
+    Number.isFinite(values.margin_pct) && values.margin_pct >= 0 && values.margin_pct <= 5
+      ? values.margin_pct
+      : DEFAULTS.margin_pct;
+  return { markup, kesPerUsd, feeKes, feeCents: toCents(feeKes), marginPct };
 }
 
 /** Create any missing settings rows, then load them into the cache. Safe to call repeatedly. */
@@ -89,11 +102,25 @@ async function writeSetting(key, value) {
 const setMarkup = (markup) => writeSetting('markup', markup);
 const setKesPerUsd = (rate) => writeSetting('kes_per_usd', rate);
 const setFeeKes = (fee) => writeSetting('fee_kes', fee);
+const setMarginPct = (pct) => writeSetting('margin_pct', pct);
 
-/** Customer rate in KES cents per 1000 units, including the fixed fee. */
+/** Provider cost in KES cents, after the legacy markup multiplier. */
+function costCents(providerRateUsd, settings = getSettings()) {
+  const usd = Number(providerRateUsd) * (1 + settings.markup);
+  if (!Number.isFinite(usd) || usd < 0) return 0;
+  return Math.round(usd * settings.kesPerUsd * 100);
+}
+
+/** Gross margin in cents: the flat fee, or the percentage, whichever is larger. */
+function grossCents(cost, settings = getSettings()) {
+  const pct = Math.round(cost * (settings.marginPct || 0));
+  return Math.max(settings.feeCents, pct);
+}
+
+/** Customer rate in KES cents per 1000 units, including the gross margin. */
 function rateCentsPer1000(providerRateUsd, settings = getSettings()) {
-  const kes = Number(providerRateUsd) * (1 + settings.markup) * settings.kesPerUsd;
-  return Math.round(kes * 100) + settings.feeCents;
+  const cost = costCents(providerRateUsd, settings);
+  return cost + grossCents(cost, settings);
 }
 
 /**
@@ -122,10 +149,11 @@ function priceCentsFromCharged(chargedUsd, { type, quantity }, settings = getSet
   if (!Number.isFinite(charged) || charged < 0) return null;
   const qty = Number(quantity) || 1;
   if (isFlat(type)) {
-    return Math.max(1, Math.round(charged * (1 + settings.markup) * settings.kesPerUsd * 100) + settings.feeCents);
+    const cost = costCents(charged, settings);
+    return Math.max(1, cost + grossCents(cost, settings));
   }
   const per1000 = (charged * 1000) / qty;
-  const rateCents = Math.round(per1000 * (1 + settings.markup) * settings.kesPerUsd * 100) + settings.feeCents;
+  const rateCents = rateCentsPer1000(per1000, settings);
   return Math.max(1, ceilScaled(rateCents, qty, 1000));
 }
 
@@ -136,6 +164,9 @@ module.exports = {
   setMarkup,
   setKesPerUsd,
   setFeeKes,
+  setMarginPct,
+  costCents,
+  grossCents,
   rateCentsPer1000,
   sellRateKes,
   priceCents,

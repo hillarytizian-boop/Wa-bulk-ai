@@ -11,6 +11,24 @@
   },
   "headers": [
     {
+      "source": "/landing.css",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=600, stale-while-revalidate=86400"
+        }
+      ]
+    },
+    {
+      "source": "/(icon-.*\\.png|apple-touch-icon\\.png|og\\.png|favicon\\.svg|manifest\\.webmanifest)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=31536000, immutable"
+        }
+      ]
+    },
+    {
       "source": "/admin",
       "headers": [
         {
@@ -96,12 +114,20 @@
       "headers": [
         {
           "key": "Cache-Control",
-          "value": "public, max-age=0, must-revalidate"
+          "value": "public, max-age=600, stale-while-revalidate=86400"
         }
       ]
     }
   ],
   "rewrites": [
+    {
+      "source": "/p/(.*)",
+      "destination": "/api/index.js"
+    },
+    {
+      "source": "/sitemap.xml",
+      "destination": "/api/index.js"
+    },
     {
       "source": "/admin",
       "destination": "/admin.html"

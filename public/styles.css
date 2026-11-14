@@ -591,3 +591,19 @@ tbody tr:last-child td { border-bottom: none; }
 .chip-btn.active { background: var(--brand); color: var(--brand-ink); border-color: transparent; }
 .chip-btn.inferred { border-color: var(--brand); color: var(--text); }
 .finder-sep { width: 1px; align-self: stretch; background: var(--line); margin: 2px 4px; }
+
+/* Storefront / landing blocks ------------------------------------------------ */
+/* Ordered lists and plain lists used for "how it works" and the trust points. Numbered markers are
+   drawn in the muted colour so the black/white theme stays calm. */
+.trust { margin: 0; padding-left: 18px; font-size: .84rem; line-height: 1.5; color: var(--muted); }
+.trust li { margin-bottom: 7px; }
+.trust li::marker { color: var(--muted); }
+.trust li:last-child { margin-bottom: 0; }
+
+/* "You are short on this order" panel on the order form. */
+.shortfall {
+  margin-top: 14px; padding: 12px; border: 1px solid var(--line); border-radius: 10px;
+  background: transparent;
+}
+.shortfall h2 { margin: 0 0 6px; font-size: .78rem; text-transform: uppercase; letter-spacing: .07em; }
+.shortfall .hint { margin: 0 0 10px; }

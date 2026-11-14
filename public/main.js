@@ -47,6 +47,85 @@
     else location.hash = next;
   }
 
+  // ------------------------------------------------------------------ password reset
+  // Two screens: ask for a link, then use it. The token comes back in the hash (#/reset?token=…)
+  // so it never reaches a server log as part of a query string on the HTML request.
+  function forgotView() {
+    stopTimer();
+    const email = h('input', { type: 'email', autocomplete: 'email', placeholder: 'you@example.com' });
+    const note = h('div', { class: 'hint' });
+    const btn = h('button', { class: 'btn block' }, 'Email me a reset link');
+
+    const submit = async () => {
+      note.textContent = '';
+      btn.disabled = true;
+      try {
+        const res = await api('/auth/forgot', { method: 'POST', body: { email: email.value.trim() } });
+        fill(note, res.message || 'If that email has an account, a reset link is on its way.');
+        track('reset_requested');
+      } catch (e) {
+        note.textContent = e.message;
+      } finally { btn.disabled = false; }
+    };
+    btn.addEventListener('click', submit);
+    email.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+
+    fill(view,
+      pageHead('Reset your password', 'We email a link that works once and expires in 30 minutes.'),
+      h('div', { class: 'card' },
+        h('label', null, 'Email'), email, btn, note,
+        h('p', { class: 'hint' }, 'Signed in with Google and never set a password? Use the Google button on the login screen instead.'),
+        h('p', { class: 'hint' }, h('a', { href: '#/login' }, '← Back to log in'))));
+  }
+
+  function resetView(params = {}) {
+    stopTimer();
+    const token = String(params.token || '');
+    const next = h('input', { type: 'password', autocomplete: 'new-password', placeholder: 'At least 8 characters' });
+    const again = h('input', { type: 'password', autocomplete: 'new-password', placeholder: 'Repeat the password' });
+    const err = h('div', { class: 'errtext' });
+    const btn = h('button', { class: 'btn block' }, 'Set new password');
+
+    if (!token) {
+      return fill(view, pageHead('New password'),
+        errBox('That link is missing its token. Request a new reset email.'),
+        h('a', { class: 'btn', href: '#/forgot' }, 'Request a new link'));
+    }
+
+    fill(view, pageHead('Choose a new password', 'This link works once.'),
+      h('div', { class: 'card' },
+        h('label', null, 'New password'), next,
+        h('label', null, 'Repeat it'), again,
+        err, btn,
+        h('p', { class: 'hint' }, 'Setting a new password signs out every other device.')));
+
+    // Say up front when the link is dead, instead of after the customer types a password.
+    api(`/auth/reset/${encodeURIComponent(token)}`)
+      .then((r) => {
+        if (!r.valid) {
+          err.textContent = 'That reset link has expired. Request a new one.';
+          btn.disabled = true;
+          view.append(h('a', { class: 'btn ghost', href: '#/forgot' }, 'Request a new link'));
+        }
+      })
+      .catch(() => {});
+
+    btn.addEventListener('click', async () => {
+      err.textContent = '';
+      if (next.value !== again.value) { err.textContent = 'The two passwords do not match.'; return; }
+      btn.disabled = true;
+      try {
+        const { user, message } = await api('/auth/reset', { method: 'POST', body: { token, password: next.value } });
+        state.user = user;
+        toast(message || 'Password changed.');
+        location.hash = '#/';
+      } catch (e) {
+        err.textContent = e.message;
+        btn.disabled = false;
+      }
+    });
+  }
+
   // ------------------------------------------------------------------ helpers
   function h(tag, props, ...kids) {
     const el = document.createElement(tag);
@@ -119,8 +198,32 @@
     });
     let data = null;
     try { data = await res.json(); } catch { /* empty / non-JSON */ }
-    if (!res.ok) throw new Error((data && data.error) || `Request failed (${res.status})`);
+    if (!res.ok) {
+      const err = new Error((data && data.error) || `Request failed (${res.status})`);
+      err.status = res.status;
+      err.data = data;
+      throw err;
+    }
     return data;
+  }
+
+  // ------------------------------------------------------------------ funnel counters
+  // First-party only: one small POST per event, no cookies, no third-party script (the CSP would
+  // block one anyway). Counts are aggregated per day server-side. Nothing here may ever break a
+  // sale, so every failure is swallowed.
+  const tracked = new Set();
+  function track(name) {
+    try {
+      const key = `${name}|${new Date().toISOString().slice(0, 10)}`;
+      if (tracked.has(key)) return; // at most once per event per tab per day
+      tracked.add(key);
+      fetch('/api/events', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      }).catch(() => {});
+    } catch { /* analytics is optional */ }
   }
 
   // ------------------------------------------------------------------ fast reads
@@ -324,6 +427,7 @@
     '': 'Dashboard', orders: 'Orders', order: 'New order', services: 'Services',
     login: 'Log in', register: 'Create account', wallet: 'Wallet', mass: 'Mass order',
     drip: 'Drip campaigns', support: 'Support', ticket: 'Ticket', trending: 'Trending', password: 'Password', help: 'Help',
+    privacy: 'Privacy', forgot: 'Reset password', reset: 'New password',
   };
 
   const pageHead = (title, sub, action) => h('div', { class: 'page-head' },
@@ -372,7 +476,10 @@
     const baseRoute = route.split('/')[0];
     document.title = `${PAGE_TITLES[baseRoute] || 'Dashboard'} | ${site}`;
     document.getElementById('appTitle').textContent = `${PAGE_TITLES[baseRoute] || 'Dashboard'} | ${site}`;
-    document.getElementById('appSub').textContent = location.host;
+    // The domain is a placeholder until a real one is bought; the promise is not.
+    document.getElementById('appSub').textContent = state.user
+      ? `Pay with M-Pesa · Instant delivery`
+      : 'Pay with M-Pesa · Prices in KSh';
 
     // balance strip: brand · [amount + KES v] · translate
     const amount = state.user ? (state.user.balance_cents / 100).toFixed(2) : '0.00';
@@ -413,7 +520,7 @@
     const links = [['', 'Dashboard'], ['order', 'New order'], ['trending', 'Trending'], ['services', 'Pricing'], ['mass', 'Mass order']];
     if (state.user) links.push(['orders', 'Orders'], ['wallet', 'Wallet'], ['support', 'Support'], ['help', 'Help / FAQ'], ['password', 'Password']);
     else links.push(['help', 'Help / FAQ']);
-    links.push(['terms', 'Terms & Conditions']);
+    links.push(['terms', 'Terms & Conditions'], ['privacy', 'Privacy']);
     const kids = links.map(([r, label]) => h('a', { href: `#/${r}`, class: route === r ? 'active' : '' }, label));
     // The support line sits in the menu itself, not buried behind a ticket form.
     kids.push(h('a', {
@@ -644,16 +751,21 @@
   // ------------------------------------------------------------------ dashboard
   async function dashboardView() {
     stopTimer();
-    const name = state.user ? String(state.user.email).split('@')[0] : null;
+    // Logged out: this is the storefront, not an empty dashboard. A visitor used to see a KSh 0
+    // wallet, "Signed out" and "No orders yet", which reads like a broken account rather than a
+    // shop they can buy from.
+    if (!state.user) return landingView();
+
+    const name = String(state.user.email).split('@')[0];
     const balanceSlot = h('div', null, h('div', { class: 'sk w55', style: 'height:30px' }));
     const pill = h('span', { class: 'refresh-pill' }, 'Refreshing…');
     const recentBox = h('div', null, skeletons());
 
     fill(view,
       h('h1', null, 'Dashboard'),
-      h('p', { class: 'sub' }, name ? `Welcome back, ${name}. Here's your panel overview.` : 'Buy followers, likes and views — pay with M-Pesa.'),
+      h('p', { class: 'sub' }, `Welcome back, ${name}. Here's your panel overview.`),
       h('div', { class: 'row', style: 'gap:10px;margin-bottom:16px' },
-        h('a', { class: 'btn', href: state.user ? '#/order' : '#/login' }, state.user ? 'New order' : 'Get started'),
+        h('a', { class: 'btn', href: '#/order' }, 'New order'),
         h('a', { class: 'btn ghost', href: '#/trending' }, 'What\'s trending')),
       linkFinder(),
 
@@ -668,13 +780,6 @@
       h('div', { class: 'card' },
         h('div', { class: 'card-head' }, h('h2', null, 'Orders'), h('a', { class: 'btn ghost small', href: '#/orders' }, 'View all')),
         recentBox));
-
-    if (!state.user) {
-      fill(balanceSlot, h('div', { class: 'v', style: 'font-size:1.35rem;font-weight:800' }, kes(0)));
-      pill.textContent = 'Signed out';
-      fill(recentBox, h('p', { class: 'muted' }, 'No orders yet.'));
-      return;
-    }
 
     try {
       const [{ user }, { orders }] = await Promise.all([api('/auth/me'), api('/orders')]);
@@ -693,6 +798,85 @@
       pill.textContent = 'Offline';
       pill.className = 'refresh-pill err';
     }
+  }
+
+  // ------------------------------------------------------------------ storefront
+  /** Public home page: what this is, a live price example, and how to pay. */
+  async function landingView() {
+    stopTimer();
+    const prices = h('div', { class: 'card' }, h('h2', null, 'Real prices, straight from the catalogue'), skeletons(3));
+
+    fill(view,
+      h('h1', null, 'Followers, likes and views. Pay with M-Pesa.'),
+      h('p', { class: 'sub' }, 'Engagement for Instagram, TikTok, YouTube and more. Prices in KSh, no card, delivery usually starts within minutes.'),
+      h('div', { class: 'row', style: 'gap:10px;margin-bottom:16px' },
+        h('a', { class: 'btn', href: '#/register' }, 'Create an account'),
+        h('a', { class: 'btn ghost', href: '#/order?platform=all&sort=cheap' }, 'Browse prices')),
+      linkFinder(),
+      prices,
+      h('div', { class: 'card' },
+        h('h2', null, 'How it works'),
+        h('ol', { class: 'trust' },
+          h('li', null, 'Create an account with an email - no password sharing, ever.'),
+          h('li', null, 'Add funds with M-Pesa: an STK prompt arrives on your phone, and the wallet is credited once Safaricom confirms.'),
+          h('li', null, 'Paste a public link, choose the quantity, and the order starts.')),
+        h('p', { class: 'hint' }, 'Delivery depends on third-party vendors and delivered engagement can drop — that is in the terms, in plain words.')),
+      h('div', { class: 'card' },
+        h('h2', null, 'Why people here use it'),
+        h('ul', { class: 'trust' },
+          h('li', null, 'M-Pesa only — no card details to hand over.'),
+          h('li', null, 'Prices include the service fee; the total you see is the total you pay.'),
+          h('li', null, 'No password is ever needed: orders take a public link or username.'),
+          h('li', null, 'Free refill where the provider offers it, and undelivered amounts go back to your wallet.'),
+          h('li', null, 'A real person on WhatsApp when an order misbehaves.'))),
+      h('p', { class: 'hint' }, 'Already registered? ', h('a', { href: '#/login' }, 'Log in'), ' · ',
+        h('a', { href: '#/terms' }, 'Terms'), ' · ', h('a', { href: '#/privacy' }, 'Privacy'), ' · ',
+        h('a', { href: '#/help' }, 'Help')));
+
+    track('home_view');
+    try {
+      const data = await loadServices({ sort: 'cheap', per_page: 5, page: 1 });
+      if (stale()) return;
+      fill(prices,
+        h('h2', null, 'Real prices from the catalogue'),
+        h('div', null, data.services.map((s) => h('div', { class: 'svc' },
+          h('div', { style: 'min-width:0' },
+            h('div', { class: 'name' }, s.name),
+            h('div', { class: 'meta' }, s.category)),
+          h('div', { class: 'svc-side' },
+            h('span', { class: 'price' }, s.flat ? amt(s.rate_cents) : per1000(s.rate_cents)),
+            h('a', { class: 'btn small', href: `#/order?service=${s.id}` }, 'Order'))))),
+        h('p', { class: 'hint' }, 'Cheapest services in the whole catalogue. Every price already includes the service fee.'));
+    } catch (e) {
+      fill(prices, h('h2', null, 'Prices'),
+        h('p', { class: 'muted' }, 'Live prices are slow to load right now. '),
+        h('a', { class: 'btn ghost small', href: '#/order?platform=all&sort=cheap' }, 'Open the catalogue'));
+    }
+  }
+
+  // ------------------------------------------------------------------ privacy
+  // Written for a customer, not a lawyer: what is stored, why, and what is never done.
+  const PRIVACY = [
+    ['What we store', 'Your email address, a bcrypt hash of your password (never the password itself), your wallet balance and transaction history, the orders you place, and any support messages you send. If you sign in with Google we store the Google account id and nothing else from Google.'],
+    ['Why we store it', 'To sign you in, to keep a correct balance, to send your orders to the delivery provider, and to answer you when something goes wrong. Nothing else.'],
+    ['Who else sees it', 'Payments are processed by PayHero and Safaricom (M-Pesa), and orders are passed to the delivery provider, which receives the public link you submitted and the quantity. Support runs over WhatsApp, and email is sent through Resend. They see what is needed to do that job, and nothing more.'],
+    ['What is never done here', 'No advertising networks, no third-party analytics script, no selling or renting of customer data, and no reading of your social accounts. Orders only ever need a public link or username, so we never ask for a password.'],
+    ['Cookies', 'One cookie, and it is the session cookie that keeps you signed in. It is HttpOnly, SameSite=Strict and Secure in production. There is no tracking cookie and no consent banner because there is nothing to consent to.'],
+    ['Counting visits', 'The panel counts a small number of things internally (home page viewed, order placed, top-up started) in aggregate per day. These are counts, not profiles: they carry no identifier, no IP address and no cookie.'],
+    ['Children', 'You must be 18 or older to hold an account.'],
+    ['Keeping and deleting', 'Transaction and order records are kept while the account exists because they are the money trail. Ask for your account to be deleted and it is removed along with its personal data; records we are required to keep for accounting are retained without the account.'],
+    ['Questions', 'Open a support ticket in the panel or use the WhatsApp line. Deletion and data questions are handled by the account owner.'],
+  ];
+
+  function privacyView() {
+    stopTimer();
+    fill(view,
+      pageHead('Privacy', 'What is stored, who sees it, and what is never done.'),
+      h('div', { class: 'card' },
+        PRIVACY.map(([h2, text]) => h('div', { class: 'terms-block' }, h('h3', null, h2), h('p', null, text))),
+        h('p', { class: 'hint' }, 'This page describes current practice. The Terms & Conditions are the binding agreement.')),
+      h('p', { class: 'hint' }, h('a', { href: '#/terms' }, 'Terms & Conditions'), ' · ',
+        h('a', { href: '#/privacy' }, 'Privacy'), ' · ', h('a', { href: '#/help' }, 'Help')));
   }
 
   // ------------------------------------------------------------------ catalog
@@ -969,6 +1153,7 @@
   /** Step 3 - the order form for one service. */
   async function orderFormView(params) {
     stopTimer();
+    track('order_form_view');
     const sid = Number(params.service) || 0;
     // Paint from the list the customer just tapped when we already know the service, so the form
     // opens instantly; the authoritative price still comes from the quote endpoint below.
@@ -1001,6 +1186,7 @@
     const totalEl = h('div', { class: 'v big' }, '—');
     const note   = h('div', { class: 'hint' });
     const btn    = h('button', { class: 'btn block' }, 'Place order');
+    const shortfallHost = h('div');
 
     function localTotal() {
       if (service.flat) return service.rate_cents;
@@ -1051,7 +1237,7 @@
       h('div', null,
         h('div', { class: 'k', style: 'color:var(--muted);font-size:.72rem;text-transform:uppercase;letter-spacing:.07em;margin-bottom:6px' }, 'Total'),
         totalEl),
-      note, btn);
+      note, btn, shortfallHost);
 
     btn.addEventListener('click', async () => {
       if (!state.user) { toast('Please log in to place an order.', true); location.hash = '#/login'; return; }
@@ -1061,9 +1247,16 @@
       try {
         const res = await api('/orders', { method: 'POST', body });
         setBalance(res.balance_cents);
+        track('order_placed');
         toast(`Order #${res.order.id} placed.`);
         location.hash = '#/orders';
-      } catch (e) { toast(e.message, true); btn.disabled = false; }
+      } catch (e) {
+        btn.disabled = false;
+        toast(e.message, true);
+        // 402: the wallet is short. Offer to collect exactly the difference right here, so the
+        // customer does not have to remember the amount, walk to the wallet and come back.
+        if (e.status === 402) offerShortfall(shortfallHost, Math.max(0, localTotal() - (state.user.balance_cents || 0)));
+      }
     });
 
     fill(info,
@@ -1081,6 +1274,52 @@
       h('div', { class: 'card' }, h('h2', null, 'Service info'), info));
 
     refreshQuote();
+  }
+
+  /**
+   * "You are short KSh N" panel: collects the difference with M-Pesa, then retries the order the
+   * customer was already trying to place. `minTopupKes` is respected - M-Pesa cannot collect less.
+   */
+  function offerShortfall(host, missingCents) {
+    if (!host) return;
+    const min = Number((state.meta && state.meta.minTopupKes) || 50);
+    const need = Math.max(min, Math.ceil((missingCents || 0) / 100));
+    if (!state.meta || !state.meta.mpesaEnabled) {
+      fill(host, h('p', { class: 'hint' }, `Add ${amt(need * 100)} to your wallet first. `,
+        h('a', { href: '#/wallet' }, 'Open the wallet →')));
+      return;
+    }
+    const phone = h('input', { type: 'tel', autocomplete: 'tel', placeholder: '0712 345 678' });
+    const status = h('div', { class: 'hint' });
+    const go = h('button', { class: 'btn block' }, `Pay ${amt(need * 100)} with M-Pesa`);
+
+    go.addEventListener('click', async () => {
+      go.disabled = true;
+      status.textContent = 'Sending the M-Pesa prompt…';
+      track('shortfall_pay');
+      try {
+        const res = await payWithMpesa(phone.value, need, { onStatus: (m) => { status.textContent = m; } });
+        if (res.status !== 'paid') {
+          status.textContent = res.status === 'failed'
+            ? 'The payment was not completed. Try again, or open the wallet.'
+            : 'No confirmation yet. If you approved it, the balance appears in a moment.';
+          go.disabled = false;
+          return;
+        }
+        status.textContent = 'Paid. Placing your order…';
+        toast(`Paid ${amt(need * 100)}.`);
+        track('topup_paid');
+        route(); // re-render the form with the new balance
+      } catch (e) {
+        status.textContent = e.message;
+        go.disabled = false;
+      }
+    });
+
+    fill(host, h('div', { class: 'shortfall' },
+      h('h2', null, 'You are short on this order'),
+      h('p', { class: 'hint' }, `Your wallet is short by ${amt(missingCents || 0)}. Add ${amt(need * 100)} with M-Pesa and the order can be placed straight away.`),
+      h('label', null, 'M-Pesa phone number'), phone, go, status));
   }
 
   // ------------------------------------------------------------------ orders
@@ -1174,8 +1413,32 @@
     viewSel.addEventListener('change', () => draw());
     dateSel.addEventListener('change', () => draw());
 
+    // Manual sync for the orders the customer is actually watching. The 20 s poll below keeps the
+    // list fresh; this is for "I just paid, why is it still pending" - it asks the provider now.
+    const syncBtn = h('button', { class: 'btn ghost' }, 'Sync now');
+    syncBtn.addEventListener('click', async () => {
+      syncBtn.disabled = true;
+      const live = (state.orders || []).filter((o) => groupOf(o.status) === 'active').slice(0, 8);
+      let moved = 0;
+      const before = new Map((state.orders || []).map((o) => [o.id, o.status]));
+      try {
+        for (const o of live) {
+          try {
+            const { order } = await api(`/orders/${o.id}/refresh`, { method: 'POST' });
+            if (order && before.get(order.id) !== order.status) moved += 1;
+          } catch { /* one bad order must not stop the sweep */ }
+        }
+        await draw();
+        toast(live.length
+          ? (moved ? `${moved} order${moved === 1 ? '' : 's'} moved forward.` : 'Checked - nothing has changed yet.')
+          : 'Nothing in progress to check.');
+      } finally { syncBtn.disabled = false; }
+    });
+
     fill(view,
-      pageHead('Orders', 'View and manage your orders', h('a', { class: 'btn', href: '#/order' }, '+ New Order')),
+      pageHead('Orders', 'View and manage your orders',
+        h('div', { class: 'row', style: 'gap:8px;flex-wrap:nowrap' },
+          syncBtn, h('a', { class: 'btn', href: '#/order' }, '+ New Order'))),
       chips,
       h('div', { class: 'divider', style: 'margin:6px 0 16px' }),
       h('label', { style: 'margin-top:0' }, 'Search'),
@@ -1333,6 +1596,7 @@
 
   function authView(mode, params = {}) {
     stopTimer();
+    track(mode === 'login' ? 'login_view' : 'register_view');
     const isLogin = mode === 'login';
     const email = h('input', { type: 'email', autocomplete: 'email', placeholder: 'you@example.com' });
     const password = h('input', { type: 'password', autocomplete: isLogin ? 'current-password' : 'new-password', placeholder: '••••••••' });
@@ -1356,6 +1620,7 @@
           ? { email: email.value.trim(), password: password.value }
           : { email: email.value.trim(), password: password.value, accept_terms: true };
         const { user } = await api(`/auth/${isLogin ? 'login' : 'register'}`, { method: 'POST', body });
+        track(isLogin ? 'login_success' : 'register_success');
         state.user = user;
         await loadFavorites();
         renderChrome();
@@ -1378,6 +1643,7 @@
         h('label', null, 'Password'), password,
         isLogin ? null : agreeRow,
         err, btn,
+        isLogin ? h('p', { class: 'hint' }, h('a', { href: '#/forgot' }, 'Forgot your password?')) : null,
         h('p', { class: 'hint' }, isLogin ? 'No account yet? ' : 'Already registered? ',
           h('a', { href: isLogin ? '#/register' : '#/login' }, isLogin ? 'Create one' : 'Log in')),
         h('p', { class: 'hint' }, h('a', { href: '#/services' }, 'Browse prices without an account →')),
@@ -1409,6 +1675,40 @@
   }
 
   // ------------------------------------------------------------------ wallet
+  /**
+   * Ask M-Pesa for one STK prompt and resolve when the top-up settles: `paid`, `failed` or
+   * `timeout` (the customer did not finish the prompt). Used by the wallet screen and by the
+   * "you are short KSh X" button on the order form, so nobody has to leave the order to top up.
+   */
+  function payWithMpesa(phone, amountKes, { onStatus } = {}) {
+    return api('/wallet/topup', { method: 'POST', body: { phone, amount_kes: Number(amountKes) } })
+      .then((res) => new Promise((resolve) => {
+        if (onStatus) onStatus(res.message || 'Check your phone for the M-Pesa prompt.');
+        let n = 0;
+        const timer = setInterval(async () => {
+          n += 1;
+          try {
+            const { topup } = await api(`/wallet/topup/${res.topup_id}`);
+            if (topup.status === 'paid') {
+              clearInterval(timer);
+              resolve({ status: 'paid', topup });
+            } else if (topup.status !== 'pending') {
+              clearInterval(timer);
+              resolve({ status: 'failed', topup });
+            } else if (n >= 40) {
+              clearInterval(timer);
+              resolve({ status: 'timeout' });
+            } else if (onStatus) {
+              onStatus('Waiting for you to approve the M-Pesa prompt…');
+            }
+          } catch {
+            clearInterval(timer);
+            resolve({ status: 'timeout' });
+          }
+        }, 3000);
+      }));
+  }
+
   async function walletView() {
     if (!requireLogin()) return;
     stopTimer();
@@ -1426,6 +1726,7 @@
     btn.addEventListener('click', async () => {
       err.textContent = '';
       btn.disabled = true;
+      track('topup_started');
       try {
         const res = await api('/wallet/topup', { method: 'POST', body: { phone: phone.value, amount_kes: Number(amount.value) } });
         toast(res.message || 'Check your phone.');
@@ -1443,7 +1744,7 @@
           if (topup.status !== 'pending') {
             stopTimer();
             toast(topup.status === 'paid' ? `Payment received: ${amt(topup.credited_cents)}` : 'Payment was not completed.', topup.status !== 'paid');
-            if (topup.status === 'paid') walletView();
+            if (topup.status === 'paid') { track('topup_paid'); walletView(); }
           } else if (n > 20) stopTimer();
         } catch { stopTimer(); }
       }, 3000);
@@ -1670,7 +1971,7 @@
     // Acceptance gate. An account that has not accepted the current terms can still read the
     // terms, the help page and sign out - nothing else. state.afterTerms remembers where it was
     // heading so accepting drops the customer back there.
-    const gateExempt = ['terms', 'help', 'login', 'register'].includes(name);
+    const gateExempt = ['terms', 'privacy', 'help', 'login', 'register', 'forgot', 'reset'].includes(name);
     if (state.user && state.user.terms && !state.user.terms.accepted && !gateExempt) {
       state.afterTerms = rawHash() || '#/';
       return termsView();
@@ -1694,6 +1995,9 @@
       case 'password': return passwordView();
       case 'help': return helpView();
       case 'terms': return termsView();
+      case 'privacy': return privacyView();
+      case 'forgot': return forgotView();
+      case 'reset': return resetView(params);
       case 'wallet': return walletView();
       default:
         return fill(view, pageHead('Not found'), h('p', { class: 'muted' }, 'That page does not exist.'),

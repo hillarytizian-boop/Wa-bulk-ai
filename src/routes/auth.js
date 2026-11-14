@@ -6,6 +6,8 @@ const rateLimit = require('express-rate-limit');
 const db = require('../db');
 const config = require('../config');
 const throttle = require('../throttle');
+const mailer = require('../mailer');
+const audit = require('../audit');
 const { HttpError, wrap } = require('../errors');
 
 const router = express.Router();
@@ -152,6 +154,9 @@ router.post(
     const user = await db.one('SELECT * FROM users WHERE id = $1', [id]);
     setSession(res, user);
     res.status(201).json({ user: publicUser(user) });
+    // Welcome mail is best-effort and deliberately after the response: a mail failure must never
+    // turn a successful sign-up into an error.
+    mailer.welcome(email).catch(() => {});
   })
 );
 
@@ -223,6 +228,106 @@ router.post(
     const fresh = await db.one('SELECT * FROM users WHERE id = $1', [row.id]);
     setSession(res, fresh); // keep the current device signed in
     res.json({ user: publicUser(fresh), message: 'Password updated. Other devices have been signed out.' });
+  })
+);
+
+// ------------------------------------------------------------------ password reset
+//
+// Requesting a reset never reveals whether an address exists: the answer is always the same 200.
+// Only a SHA-256 of the token is stored, the token is single-use, and a successful reset bumps
+// token_version so every existing session dies with it.
+const RESET_TTL_SEC = 30 * 60;
+const RESET_PER_HOUR = 5;
+const RESET_IP_PER_HOUR = 20;
+const sha256 = (v) => crypto.createHash('sha256').update(String(v)).digest('hex');
+
+router.post(
+  '/forgot',
+  limiter,
+  wrap(async (req, res) => {
+    const email = normalizeEmail(req.body && req.body.email);
+    const generic = { ok: true, message: 'If that email has an account, a reset link is on its way.' };
+    if (!EMAIL_RE.test(email) || email.length > 254) return res.json(generic);
+
+    const perIp = await throttle.bump(`forgot-ip|${req.ip}`, 3600);
+    if (perIp.count > RESET_IP_PER_HOUR) {
+      throw new HttpError(429, 'Too many reset requests from here. Please try again later.');
+    }
+
+    const user = await db.one('SELECT id, email, password_set FROM users WHERE email = $1', [email]);
+    if (!user) return res.json(generic);
+
+    const perUser = await throttle.bump(`forgot|${user.id}`, 3600);
+    if (perUser.count > RESET_PER_HOUR) return res.json(generic);
+
+    const token = crypto.randomBytes(32).toString('hex');
+    const t = now();
+    // Invalidate older links: only the newest token for an account is worth keeping.
+    await db.run('UPDATE password_resets SET used_at = $1 WHERE user_id = $2 AND used_at = 0', [t, user.id]);
+    await db.run(
+      'INSERT INTO password_resets (user_id, token_hash, expires_at, used_at, ip, created_at) VALUES ($1,$2,$3,0,$4,$5)',
+      [user.id, sha256(token), t + RESET_TTL_SEC, String(req.ip || ''), t]
+    );
+
+    // Google-only accounts have no password to reset; point them at Google instead of a dead end.
+    const sent = Number(user.password_set)
+      ? await mailer.resetPassword(user.email, token)
+      : { ok: false, skipped: 'google_only' };
+    if (sent.ok) audit.record(req, 'auth.reset_requested', { target: user.id });
+    return res.json(generic);
+  })
+);
+
+// Token validity check so the reset screen can say "this link expired" before the user types.
+router.get(
+  '/reset/:token',
+  wrap(async (req, res) => {
+    const row = await db.one(
+      'SELECT user_id, expires_at, used_at FROM password_resets WHERE token_hash = $1',
+      [sha256(req.params.token)]
+    );
+    const usable = Boolean(row) && !Number(row.used_at) && Number(row.expires_at) > now();
+    res.json({ valid: usable });
+  })
+);
+
+router.post(
+  '/reset',
+  limiter,
+  wrap(async (req, res) => {
+    const token = String((req.body && req.body.token) || '');
+    const password = req.body && req.body.password;
+    assertPassword(password);
+    if (!token) throw new HttpError(400, 'That reset link is missing its token');
+
+    const row = await db.one(
+      'SELECT * FROM password_resets WHERE token_hash = $1',
+      [sha256(token)]
+    );
+    if (!row || Number(row.used_at) || Number(row.expires_at) <= now()) {
+      throw new HttpError(400, 'That reset link has expired. Request a new one.');
+    }
+
+    const user = await db.one('SELECT * FROM users WHERE id = $1', [row.user_id]);
+    if (!user) throw new HttpError(400, 'That account no longer exists');
+
+    const hash = await bcrypt.hash(password, ROUNDS);
+    // Single use: mark used first, then only proceed if this call was the one that claimed it.
+    const claim = await db.run('UPDATE password_resets SET used_at = $1 WHERE id = $2 AND used_at = 0', [
+      now(),
+      row.id,
+    ]);
+    if (claim && claim.changes === 0) throw new HttpError(400, 'That reset link has already been used');
+
+    await db.run(
+      'UPDATE users SET password_hash = $1, password_set = 1, token_version = token_version + 1 WHERE id = $2',
+      [hash, user.id]
+    );
+    await clearFailures(`login|${req.ip}|${user.email}`);
+    audit.record(req, 'auth.reset_completed', { target: user.id });
+    const fresh = await db.one('SELECT * FROM users WHERE id = $1', [user.id]);
+    setSession(res, fresh); // the person who reset the password is signed in here
+    res.json({ user: publicUser(fresh), message: 'Password changed. You are signed in.' });
   })
 );
 

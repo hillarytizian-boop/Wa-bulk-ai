@@ -144,6 +144,35 @@ const SCHEMA = [
     indexes: [['idx_favorites_user', 'user_id, service_id']],
   },
   {
+    // One row per password-reset request. Only the SHA-256 of the token is stored, so a database
+    // leak cannot be replayed as a reset link.
+    name: 'password_resets',
+    columns: [
+      ['id', 'id'],
+      ['user_id', 'int', { notNull: true, references: 'users(id)' }],
+      ['token_hash', 'text', { notNull: true, unique: true }],
+      ['expires_at', 'int', { notNull: true }],
+      ['used_at', 'int', { notNull: true, default: 0 }],
+      ['ip', 'text'],
+      ['created_at', 'int', { notNull: true }],
+    ],
+    indexes: [['idx_password_resets_user', 'user_id']],
+  },
+  {
+    // Aggregated funnel counters (one row per event per UTC day). Deliberately not per-user: there
+    // is no identifier, no IP and no cookie, so this table cannot become a profile.
+    name: 'events',
+    columns: [
+      ['id', 'id'],
+      ['key', 'text', { notNull: true, unique: true }],
+      ['name', 'text', { notNull: true }],
+      ['day', 'int', { notNull: true }],
+      ['count', 'int', { notNull: true, default: 0 }],
+      ['updated_at', 'int', { notNull: true, default: 0 }],
+    ],
+    indexes: [['idx_events_day', 'day']],
+  },
+  {
     // Shared fixed-window counters. Lives in the database so every serverless instance counts
     // against the same budget - process memory is per-instance and was the hole in the old limiter.
     name: 'rate_limits',

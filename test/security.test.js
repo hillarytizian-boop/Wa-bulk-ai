@@ -251,6 +251,70 @@ async function test(name, fn) {
     );
   });
 
+  await test('password reset: unknown email answers exactly like a known one, and nothing is stored', async () => {
+    const one = await call('/api/auth/forgot', { method: 'POST', body: { email: 'ghost@example.test' } });
+    const two = await call('/api/auth/forgot', { method: 'POST', body: { email: ADMIN_EMAIL } });
+    assert.equal(one.status, 200);
+    assert.equal(two.status, 200);
+    assert.deepEqual(one.data, two.data, 'responses must be indistinguishable');
+    // A dedicated account: resetting the admin's password here would break every test after this.
+    const created = await call('/api/auth/register', {
+      method: 'POST',
+      body: { email: 'reset-target@panel.test', password: 'Original!2026', accept_terms: true },
+    });
+    assert.equal(created.status, 201);
+    const before = raw.prepare('SELECT COUNT(*) AS n FROM password_resets').get();
+    const res = await call('/api/auth/forgot', { method: 'POST', body: { email: 'reset-target@panel.test' } });
+    assert.equal(res.status, 200);
+    const after = raw.prepare('SELECT COUNT(*) AS n FROM password_resets').get();
+    assert.equal(Number(after.n), Number(before.n) + 1, 'the real account gets a reset row');
+  });
+
+  await test('password reset: the token is single use, expires, and only its hash is stored', async () => {
+    const crypto = require('crypto');
+    const now = Math.floor(Date.now() / 1000);
+    const token = 'a'.repeat(64);
+    const hash = crypto.createHash('sha256').update(token).digest('hex');
+    const user = raw.prepare('SELECT id FROM users WHERE email = ?').get('reset-target@panel.test');
+    raw.prepare('INSERT INTO password_resets (user_id, token_hash, expires_at, used_at, ip, created_at) VALUES (?,?,?,0,?,?)')
+      .run(user.id, hash, now + 600, '127.0.0.1', now);
+    const stored = raw.prepare('SELECT token_hash FROM password_resets ORDER BY id DESC LIMIT 1').get();
+    assert.equal(stored.token_hash, hash, 'the raw token is never stored');
+
+    const ok = await call('/api/auth/reset', { method: 'POST', body: { token, password: 'N3wPassword!2026' } });
+    assert.equal(ok.status, 200);
+    // The reset really changed the password.
+    const signedIn = await loginAs('reset-target@panel.test', 'N3wPassword!2026');
+    assert.equal(signedIn.status, 200);
+    const again = await call('/api/auth/reset', { method: 'POST', body: { token, password: 'An0therOne!2026' } });
+    assert.equal(again.status, 400, 'a used token cannot be replayed');
+
+    const expired = 'b'.repeat(64);
+    raw.prepare('INSERT INTO password_resets (user_id, token_hash, expires_at, used_at, ip, created_at) VALUES (?,?,?,0,?,?)')
+      .run(user.id, crypto.createHash('sha256').update(expired).digest('hex'), now - 5, '127.0.0.1', now - 700);
+    const stale = await call('/api/auth/reset', { method: 'POST', body: { token: expired, password: 'Y3tAnother!2026' } });
+    assert.equal(stale.status, 400, 'an expired token is refused');
+  });
+
+  await test('reset link validity probe does not leak the token or the account', async () => {
+    const res = await call('/api/auth/reset/deadbeef');
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.data, { valid: false });
+  });
+
+  await test('funnel counter accepts only allowlisted names and stores no identifier', async () => {
+    const ok = await call('/api/events', { method: 'POST', body: { name: 'home_view', ip: '1.2.3.4', email: 'x@y.z' } });
+    assert.equal(ok.status, 204);
+    const bad = await call('/api/events', { method: 'POST', body: { name: 'anything_i_want' } });
+    assert.equal(bad.status, 400);
+    const row = raw.prepare('SELECT * FROM events ORDER BY id DESC LIMIT 1').get();
+    assert.equal(row.name, 'home_view');
+    assert.equal(Number(row.count), 1);
+    const dump = JSON.stringify(row);
+    assert.ok(!dump.includes('1.2.3.4'), 'event rows carry no IP address');
+    assert.ok(!dump.includes('x@y.z'), 'event rows carry no email');
+  });
+
   await test('password change requires the current password and a >=8 char new one', async () => {
     const session = (await loginAs(ADMIN_EMAIL, ADMIN_PASSWORD)).session;
     const bad = await call('/api/auth/password', {

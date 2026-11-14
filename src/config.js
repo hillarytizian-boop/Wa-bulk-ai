@@ -56,7 +56,15 @@ module.exports = {
     markup: num(process.env.DEFAULT_MARKUP, 0),
     kesPerUsd: num(process.env.KES_PER_USD, 129.980973),
     feeKes: num(process.env.FEE_KES, 60),
+    // Optional percentage margin on top of the provider cost, used only when it beats the flat fee:
+    // gross = max(FEE_KES, marginPct x cost). DEFAULT 0 keeps the published price exactly
+    // "smm.africa price + KSh 60" - switching it to 0.2 in Admin raises prices by 20% only on
+    // orders where that is worth more than the KSh 60 fee. Nobody's price moves until that is set.
+    marginPct: num(process.env.MARGIN_PCT, 0),
   },
+
+  // Public origin, used for email links and sitemap entries.
+  publicUrl: process.env.PUBLIC_URL || 'https://hilapanel.vercel.app',
 
   minTopupKes: num(process.env.MIN_TOPUP_KES, 50),
   maxTopupKes: num(process.env.MAX_TOPUP_KES, 150000),

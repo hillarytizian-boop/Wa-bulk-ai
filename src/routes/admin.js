@@ -32,6 +32,13 @@ router.get(
     const cost = costCents(o.cost_micros, settings.kesPerUsd);
     const pendingTopups = Number((await db.one("SELECT COUNT(*) AS n FROM topups WHERE status = 'pending'")).n);
     const needsReview = Number((await db.one("SELECT COUNT(*) AS n FROM orders WHERE status = 'needs_review'")).n);
+    // Funnel counters for the last week: where visitors stop between opening the shop and paying.
+    let funnel = null;
+    try {
+      funnel = (await require('./events').summary(7)).totals;
+    } catch (err) {
+      funnel = { error: err.message };
+    }
 
     let provider = null;
     try {
@@ -54,8 +61,14 @@ router.get(
       provider_cost_cents: cost,
       profit_cents: revenueCents - cost,
       needs_review: needsReview,
+      funnel,
       pending_topups: pendingTopups,
-      settings: { markup: settings.markup, kes_per_usd: settings.kesPerUsd, fee_kes: settings.feeKes },
+      settings: {
+        markup: settings.markup,
+        margin_pct: settings.marginPct,
+        kes_per_usd: settings.kesPerUsd,
+        fee_kes: settings.feeKes,
+      },
       provider_balance: provider,
     });
   })
@@ -65,7 +78,7 @@ router.get(
 router.post(
   '/settings',
   wrap(async (req, res) => {
-    const { markup, kes_per_usd, fee_kes } = req.body || {};
+    const { markup, kes_per_usd, fee_kes, margin_pct } = req.body || {};
     if (markup !== undefined) {
       const m = Number(markup);
       if (!Number.isFinite(m) || m < 0 || m > 10) throw new HttpError(400, 'Markup must be between 0 and 10 (0.3 = +30%)');
@@ -81,9 +94,18 @@ router.post(
       if (!Number.isFinite(f) || f < 0 || f > 100000) throw new HttpError(400, 'Fee must be between 0 and 100000 KES');
       await pricing.setFeeKes(f);
     }
+    if (margin_pct !== undefined) {
+      const p = Number(margin_pct);
+      if (!Number.isFinite(p) || p < 0 || p > 1) throw new HttpError(400, 'Margin must be between 0 and 1 (0.2 = 20%)');
+      await pricing.setMarginPct(p);
+    }
     const s = pricing.getSettings();
-    audit.record(req, 'pricing.update', { detail: `markup=${s.markup} kes_per_usd=${s.kesPerUsd} fee_kes=${s.feeKes}` });
-    res.json({ settings: { markup: s.markup, kes_per_usd: s.kesPerUsd, fee_kes: s.feeKes } });
+    audit.record(req, 'pricing.update', {
+      detail: `markup=${s.markup} margin_pct=${s.marginPct} kes_per_usd=${s.kesPerUsd} fee_kes=${s.feeKes}`,
+    });
+    res.json({
+      settings: { markup: s.markup, margin_pct: s.marginPct, kes_per_usd: s.kesPerUsd, fee_kes: s.feeKes },
+    });
   })
 );
 
