@@ -26,6 +26,19 @@ const esc = (v) =>
 const kes = (n) => `KSh ${Math.round(Number(n) || 0).toLocaleString('en-KE')}`;
 
 /**
+ * Match a landing page to provider services.
+ *
+ * The provider's category is occasionally broader than the service name ("Threads Followers" filed
+ * under Instagram), so the NAME decides whenever it names any platform at all; the category is only
+ * consulted for services whose name mentions no platform.
+ */
+const PLATFORM_TOKEN = /instagram|tiktok|youtube|facebook|twitter|telegram|spotify|threads|\bx\b/i;
+const onPlatform = (nameRe, kindRe) => (s) => {
+  const text = PLATFORM_TOKEN.test(s.name) ? s.name : `${s.name} ${s.category}`;
+  return nameRe.test(text) && kindRe.test(text);
+};
+
+/**
  * Each page: the search intent, the words it has to contain, and how to find matching services in
  * the provider catalog (matched on lower-cased service name + category).
  */
@@ -36,7 +49,7 @@ const LANDINGS = [
     title: 'Buy Instagram Followers in Kenya | M-Pesa | smmpanel',
     description: 'Real Instagram followers from KSh 60. Pay with M-Pesa, delivery starts in minutes. Refill where the provider offers it.',
     intro: 'Followers delivered to your username, priced per 1000 and paid with M-Pesa. Cheapest options are listed first.',
-    match: (s) => /instagram/i.test(s.name + s.category) && /follower/i.test(s.name),
+    match: onPlatform(/instagram/i, /follower/i),
     qtyLabel: 'followers',
     faq: [
       ['Do I need to give my password?', 'No. Orders only need your public username or the post link, so nobody ever signs in to your account.'],
@@ -50,7 +63,7 @@ const LANDINGS = [
     title: 'Buy Instagram Likes in Kenya | M-Pesa | smmpanel',
     description: 'Instagram likes from KSh 60 per order. Pay with M-Pesa and get delivery started in minutes.',
     intro: 'Likes on any public post or reel. Paste the post link, choose the amount, pay with M-Pesa.',
-    match: (s) => /instagram/i.test(s.name + s.category) && /like/i.test(s.name),
+    match: onPlatform(/instagram/i, /like/i),
     qtyLabel: 'likes',
     faq: [
       ['Which link do I paste?', 'The link to the post itself (instagram.com/p/… or /reel/…). A profile link cannot receive likes.'],
@@ -63,7 +76,7 @@ const LANDINGS = [
     title: 'Buy Instagram Views & Reel Plays in Kenya | smmpanel',
     description: 'Instagram reel and video views from KSh 60. M-Pesa checkout, delivery in minutes.',
     intro: 'Views on reels and videos, priced per 1000 and paid with M-Pesa.',
-    match: (s) => /instagram/i.test(s.name + s.category) && /view|play/i.test(s.name),
+    match: onPlatform(/instagram/i, /view|play/i),
     qtyLabel: 'views',
     faq: [
       ['Do views work on reels?', 'Yes - choose a service that says Reels in its name if you only want reel plays.'],
@@ -76,7 +89,7 @@ const LANDINGS = [
     title: 'Buy TikTok Followers in Kenya | M-Pesa | smmpanel',
     description: 'TikTok followers from KSh 60. Pay with M-Pesa, delivery starts in minutes.',
     intro: 'Followers for any public TikTok profile, priced per 1000 and paid with M-Pesa.',
-    match: (s) => /tiktok/i.test(s.name + s.category) && /follower/i.test(s.name),
+    match: onPlatform(/tiktok/i, /follower/i),
     qtyLabel: 'followers',
     faq: [
       ['Do you need my TikTok login?', 'No. Orders only need your public @username.'],
@@ -89,7 +102,7 @@ const LANDINGS = [
     title: 'Buy TikTok Video Views in Kenya | smmpanel',
     description: 'TikTok video views from KSh 60. M-Pesa checkout, delivery in minutes.',
     intro: 'Views on any public TikTok video, priced per 1000 and paid with M-Pesa.',
-    match: (s) => /tiktok/i.test(s.name + s.category) && /view|play/i.test(s.name),
+    match: onPlatform(/tiktok/i, /view|play/i),
     qtyLabel: 'views',
     faq: [
       ['Which link do I paste?', 'The video link (tiktok.com/@user/video/…) - not the profile link.'],
@@ -102,7 +115,7 @@ const LANDINGS = [
     title: 'Buy YouTube Subscribers in Kenya | M-Pesa | smmpanel',
     description: 'YouTube subscribers from KSh 60. Pay with M-Pesa, delivery starts in minutes.',
     intro: 'Subscribers for any public channel, priced per 1000 and paid with M-Pesa.',
-    match: (s) => /youtube/i.test(s.name + s.category) && /subscriber|subs\b/i.test(s.name),
+    match: onPlatform(/youtube/i, /subscriber|subs\b/i),
     qtyLabel: 'subscribers',
     faq: [
       ['Will this get my channel removed?', 'We only sell services the provider has flagged for refill or stability. Growth through third parties carries risk, which the Terms describe - use services that fit your channel.'],
@@ -115,7 +128,7 @@ const LANDINGS = [
     title: 'Buy YouTube Views in Kenya | M-Pesa | smmpanel',
     description: 'YouTube video views from KSh 60. M-Pesa checkout, delivery in minutes.',
     intro: 'Views on any public YouTube video, priced per 1000 and paid with M-Pesa.',
-    match: (s) => /youtube/i.test(s.name + s.category) && /view/i.test(s.name),
+    match: onPlatform(/youtube/i, /view/i),
     qtyLabel: 'views',
     faq: [
       ['Do views count towards monetisation?', 'No. Third-party views do not count towards YouTube monetisation requirements, and the Terms say so.'],
@@ -128,7 +141,7 @@ const LANDINGS = [
     title: 'Buy Facebook Page Likes & Followers in Kenya | smmpanel',
     description: 'Facebook page likes and followers from KSh 60. Pay with M-Pesa.',
     intro: 'Page likes, followers, post likes and reactions for public pages, priced per 1000 and paid with M-Pesa.',
-    match: (s) => /facebook/i.test(s.name + s.category) && /like|follower|page/i.test(s.name),
+    match: onPlatform(/facebook/i, /like|follower|page/i),
     qtyLabel: 'likes',
     faq: [
       ['Do you need admin access?', 'No. A public page link is enough.'],
@@ -141,7 +154,7 @@ const LANDINGS = [
     title: 'Buy X / Twitter Followers in Kenya | smmpanel',
     description: 'X (Twitter) followers and likes from KSh 60. M-Pesa checkout.',
     intro: 'Followers, likes and views for public X profiles, priced per 1000 and paid with M-Pesa.',
-    match: (s) => /twitter|\bx\b/i.test(s.name + s.category) && /follower|like|view|retweet|repost/i.test(s.name),
+    match: onPlatform(/twitter|\bx\b/i, /follower|like|view|retweet|repost/i),
     qtyLabel: 'followers',
     faq: [
       ['Does it work for the new X?', 'Yes - the provider services still refer to it as Twitter; the profile is the same one.'],
@@ -153,7 +166,7 @@ const LANDINGS = [
     title: 'Buy Telegram Members & Views in Kenya | smmpanel',
     description: 'Telegram channel members and post views from KSh 60. Pay with M-Pesa.',
     intro: 'Members for public groups and channels, priced per 1000 and paid with M-Pesa.',
-    match: (s) => /telegram/i.test(s.name + s.category),
+    match: onPlatform(/telegram/i, /./),
     qtyLabel: 'members',
     faq: [
       ['Public or private channels?', 'Public channels and groups only - a private invite link cannot receive members.'],
@@ -165,7 +178,7 @@ const LANDINGS = [
     title: 'Buy Spotify Plays & Listeners in Kenya | smmpanel',
     description: 'Spotify plays, monthly listeners and followers from KSh 60. Pay with M-Pesa.',
     intro: 'Plays, listeners and playlist followers, priced per 1000 and paid with M-Pesa.',
-    match: (s) => /spotify/i.test(s.name + s.category) && /play|listener|follower/i.test(s.name),
+    match: onPlatform(/spotify/i, /play|listener|follower/i),
     qtyLabel: 'plays',
     faq: [
       ['Which link do I paste?', 'The track or artist link from Spotify, not a screenshot or a search page.'],
