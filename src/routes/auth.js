@@ -82,7 +82,11 @@ async function loadUser(req, _res, next) {
     try {
       const payload = jwt.verify(token, config.jwtSecret, { algorithms: ['HS256'] });
       const user = await db.one(
-        'SELECT id, email, is_admin, balance_cents, token_version, password_set, google_sub FROM users WHERE id = $1',
+        // terms_accepted_at/terms_version are part of the session identity: the order route gates on
+        // them (routes/shop.js requireTerms), so a projection that omits them silently refuses every
+        // customer who HAS accepted. Keep this list in step with what routes read off req.user.
+        `SELECT id, email, is_admin, balance_cents, token_version, password_set, google_sub,
+                terms_accepted_at, terms_version FROM users WHERE id = $1`,
         [payload.uid]
       );
       // token_version lets us revoke every existing session (password change, logout everywhere).

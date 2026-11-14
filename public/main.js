@@ -189,15 +189,26 @@
 
   const TRANSLATE_ICO = '<path d="M3.5 6.4h8.4M7.7 4.6v1.8M9.9 6.4c0 3.6-2.6 6.6-6.1 7.6"/><path d="M5.2 9.4c1.2 2.2 3 3.7 5.2 4.5"/><path d="M12.4 20.2 16.6 10l4.2 10.2M14 16.6h5.2"/>';
 
-  async function api(path, { method = 'GET', body } = {}) {
+  async function api(path, { method = 'GET', body } = {}, retried = false) {
+    const headers = body ? { 'Content-Type': 'application/json' } : {};
+    if (method !== 'GET' && state.user && needsProof(path)) {
+      // May take a few hundred milliseconds the first time; the screens warm it in the background.
+      try { headers['x-pay-proof'] = await getPayProof(); } catch { /* the server will ask */ }
+    }
     const res = await fetch(`/api${path}`, {
       method,
       credentials: 'same-origin',
-      headers: body ? { 'Content-Type': 'application/json' } : undefined,
+      headers,
       body: body ? JSON.stringify(body) : undefined,
     });
     let data = null;
     try { data = await res.json(); } catch { /* empty / non-JSON */ }
+    // 428 = the proof expired or was never solved. Solve a fresh one and retry exactly once.
+    if (res.status === 428 && !retried && needsProof(path)) {
+      resetPayProof();
+      if (data && data.challenge) payProof.value = null;
+      return api(path, { method, body }, true);
+    }
     if (!res.ok) {
       const err = new Error((data && data.error) || `Request failed (${res.status})`);
       err.status = res.status;
@@ -206,6 +217,57 @@
     }
     return data;
   }
+
+  // ------------------------------------------------------------------ proof of browsing
+  // The two endpoints that cost real money (an M-Pesa prompt, placing an order) ask for a puzzle
+  // that this page solves in the background. It is bound to the signed-in account and to this
+  // browser, so a request replayed from curl or from another machine is refused before any prompt
+  // is built. Solved once, reused for ten minutes.
+  const payProof = { value: null, expires: 0, solving: null };
+  const zeroBits = (bytes) => {
+    let bits = 0;
+    for (const byte of bytes) {
+      if (byte === 0) { bits += 8; continue; }
+      bits += Math.clz32(byte) - 24;
+      break;
+    }
+    return bits;
+  };
+
+  async function solvePayProof() {
+    if (!(window.crypto && window.crypto.subtle)) {
+      throw new Error('This browser cannot verify itself. Use a current browser over https.');
+    }
+    const { challenge, bits, expires_in } = await api('/challenge'); // never cached: it is per-session
+    const enc = new TextEncoder();
+    const target = `${challenge}:`;
+    const giveUp = Date.now() + 20000; // never leave a customer staring at a spinner
+    for (let nonce = 0; nonce < 5000000; nonce += 1) {
+      if ((nonce & 1023) === 0 && Date.now() > giveUp) break;
+      const digest = new Uint8Array(await window.crypto.subtle.digest('SHA-256', enc.encode(target + nonce)));
+      if (zeroBits(digest) >= bits) {
+        return { value: `${target}${nonce}`, expires: Date.now() + Math.max(60, (expires_in || 600) - 60) * 1000 };
+      }
+    }
+    throw new Error('Could not verify this browser. Reload the page and try again.');
+  }
+
+  /** Resolve a usable proof, solving one if needed. Safe to call from anywhere. */
+  function getPayProof() {
+    if (payProof.value && Date.now() < payProof.expires) return Promise.resolve(payProof.value);
+    if (!payProof.solving) {
+      payProof.solving = solvePayProof()
+        .then((p) => { payProof.value = p.value; payProof.expires = p.expires; return p.value; })
+        .finally(() => { payProof.solving = null; });
+    }
+    return payProof.solving;
+  }
+
+  /** A proof is bound to the account, so signing in or out invalidates it. */
+  function resetPayProof() { payProof.value = null; payProof.expires = 0; }
+
+  /** True for the endpoints that must carry a proof. */
+  const needsProof = (path) => path === '/wallet/topup' || path === '/orders';
 
   // ------------------------------------------------------------------ funnel counters
   // First-party only: one small POST per event, no cookies, no third-party script (the CSP would
@@ -577,6 +639,7 @@
 
   async function logout() {
     await api('/auth/logout', { method: 'POST' }).catch(() => {});
+    resetPayProof(); // the puzzle is bound to the account that just left
     state.user = null;
     state.orders = null;
     location.hash = '#/';
@@ -1292,6 +1355,8 @@
     const phone = h('input', { type: 'tel', autocomplete: 'tel', placeholder: '0712 345 678' });
     const status = h('div', { class: 'hint' });
     const go = h('button', { class: 'btn block' }, `Pay ${amt(need * 100)} with M-Pesa`);
+    go.disabled = true;
+    getPayProof().then(() => { go.disabled = false; }).catch(() => { go.disabled = false; });
 
     go.addEventListener('click', async () => {
       go.disabled = true;
@@ -1622,6 +1687,8 @@
         const { user } = await api(`/auth/${isLogin ? 'login' : 'register'}`, { method: 'POST', body });
         track(isLogin ? 'login_success' : 'register_success');
         state.user = user;
+        resetPayProof();                 // a fresh account means a fresh puzzle
+        getPayProof().catch(() => {});   // solve it while the customer reads the next screen
         await loadFavorites();
         renderChrome();
         toast(isLogin ? 'Welcome back!' : 'Account created.');
@@ -1722,6 +1789,17 @@
     const amount = h('input', { type: 'number', min: state.meta.minTopupKes, max: state.meta.maxTopupKes, value: 500, inputmode: 'numeric' });
     const err = h('div', { class: 'errtext' });
     const btn = h('button', { class: 'btn block' }, 'Send M-Pesa prompt');
+    // The prompt endpoint refuses anything that did not come from a verified browser, so say so and
+    // hold the button until the check is done (usually well before the customer types a number).
+    const verifyNote = h('div', { class: 'hint' }, 'Verifying this browser…');
+    btn.disabled = true;
+    getPayProof()
+      .then(() => { verifyNote.textContent = 'Browser verified. The prompt goes to your phone only.'; btn.disabled = false; })
+      .catch((e) => {
+        // Leave the button usable: the API answers with its own clear message if the check fails.
+        verifyNote.textContent = e.message;
+        btn.disabled = false;
+      });
 
     btn.addEventListener('click', async () => {
       err.textContent = '';
@@ -1762,7 +1840,7 @@
           ? [h('label', null, 'M-Pesa phone number'), phone,
              h('label', null, 'Amount (KES)'), amount,
              h('div', { class: 'row', style: 'margin-top:12px' }, [100, 250, 500, 1000, 2500].map((v) => h('button', { class: 'btn ghost small', onclick: () => { amount.value = v; } }, `KSh ${v}`))),
-             err, btn,
+             err, btn, verifyNote,
              h('p', { class: 'hint' }, 'You will receive an M-Pesa prompt. Your wallet is credited only after Safaricom confirms the payment.')]
           : h('p', { class: 'muted' }, 'Mobile money is not switched on yet. Top-ups will appear here as soon as the payment provider is connected.')),
       h('div', { class: 'card' },
@@ -1976,6 +2054,9 @@
       state.afterTerms = rawHash() || '#/';
       return termsView();
     }
+    // Warm the browser check on the two screens where money can move, so the click is instant.
+    if (state.user && (name === 'wallet' || name === 'order')) getPayProof().catch(() => {});
+
     if (name.startsWith('support/')) {
       state.route = 'support';
       renderChrome();

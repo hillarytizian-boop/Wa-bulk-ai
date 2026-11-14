@@ -85,13 +85,66 @@ async function test(name, fn) {
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${server.address().port}`;
 
+  // --- browser-verification harness -------------------------------------------------------------
+  // Two money endpoints (top-up, place order) only accept a request that carries a solved puzzle.
+  // The client solves it in ~400 ms; the tests solve it the same way but faster, and cache one
+  // proof per session so the suite does not pay that cost on every call.
+  const crypto = require('crypto');
+  const GATED = new Set(['/api/orders', '/api/wallet/topup']);
+  const proofCache = new Map();
+
+  function leadingZeroBits(buf) {
+    let bits = 0;
+    for (const byte of buf) {
+      if (byte === 0) { bits += 8; continue; }
+      bits += Math.clz32(byte) - 24;
+      break;
+    }
+    return bits;
+  }
+
+  async function solve(challenge, bits) {
+    for (let nonce = 0; nonce < 5_000_000; nonce++) {
+      if (leadingZeroBits(crypto.createHash('sha256').update(`${challenge}:${nonce}`).digest()) >= bits) return nonce;
+    }
+    throw new Error('puzzle unsolvable');
+  }
+
+  /** Fetch a challenge with the caller's own cookie and solve it, exactly like public/main.js does. */
+  async function payProof(cookie) {
+    const key = cookie || '';
+    if (proofCache.has(key)) return proofCache.get(key);
+    const res = await call('/api/challenge', { cookie });
+    if (res.status !== 200 || !res.data || !res.data.challenge) throw new Error(`challenge failed: ${res.status}`);
+    const nonce = await solve(res.data.challenge, res.data.bits);
+    const header = `${res.data.challenge}:${nonce}`;
+    proofCache.set(key, header);
+    return header;
+  }
+
+  /** A brand-new account and its session: fresh prompt allowance, fresh rate-limit bucket. */
+  let freshSeq = 0;
+  async function freshSession(tag = 'attack') {
+    const email = `${tag}-${++freshSeq}@panel.test`;
+    const hash = require('bcryptjs').hashSync('longpassword1', 10);
+    raw.prepare('INSERT INTO users (email, password_hash, password_set, created_at) VALUES (?,?,1,?)')
+      .run(email, hash, Math.floor(Date.now() / 1000));
+    const { session } = await loginAs(email, 'longpassword1');
+    // Accept the terms so the terms gate cannot answer before the thing under test does.
+    const acc = await call('/api/auth/accept-terms', { method: 'POST', cookie: session, body: {} });
+    if (acc.status !== 200) throw new Error(`accept-terms failed: ${acc.status} ${JSON.stringify(acc.data)}`);
+    return { email, session };
+  }
+
   /** Minimal fetch wrapper that reports status, json and set-cookie. */
-  async function call(pathname, { method = 'GET', body, rawBody, cookie, headers = {} } = {}) {
+  async function call(pathname, { method = 'GET', body, rawBody, cookie, headers = {}, noProof = false, proof } = {}) {
     const res = await fetch(base + pathname, {
       method,
       headers: {
         ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
         ...(cookie ? { Cookie: cookie } : {}),
+        ...(!noProof && GATED.has(pathname) && method !== 'GET' && proof === undefined ? { 'x-pay-proof': await payProof(cookie) } : {}),
+        ...(proof ? { 'x-pay-proof': proof } : {}),
         ...headers,
       },
       body: rawBody !== undefined ? rawBody : body === undefined ? undefined : typeof body === 'string' ? body : JSON.stringify(body),
@@ -654,6 +707,24 @@ async function test(name, fn) {
     assert.equal(again.status, 200, 'accepting twice is harmless');
   });
 
+  await test('a customer who HAS accepted the terms is not still turned away from ordering', async () => {
+    // Regression: loadUser() projected a column list without terms_accepted_at/terms_version, so
+    // requireTerms() saw nothing and refused every real customer with 403 terms_required - while the
+    // same session showed "accepted" in /api/auth/me and in the UI. No customer could place an order.
+    const { email, session } = await freshSession('terms-ok');
+    const me = await call('/api/auth/me', { cookie: session });
+    assert.equal(me.data.user.terms.accepted, true, 'the session says the terms were accepted');
+
+    const order = await call('/api/orders', {
+      method: 'POST',
+      cookie: session,
+      body: { service_id: 1, link: 'https://instagram.com/p/x', quantity: 100 },
+    });
+    assert.notEqual(order.data && order.data.code, 'terms_required', 'the terms gate must not fire here');
+    // Past the gate means a business rule answered: no balance (402) or a bad service/quantity (400).
+    assert.ok([400, 402].includes(order.status), `the order reached business validation (${email}): ${order.status}`);
+  });
+
   await test('a version bump asks an existing customer to accept again', () => {
     const config = require('../src/config');
     raw.prepare('UPDATE users SET terms_version = ? WHERE email = ?').run('2020-01-01', 'with-terms@panel.test');
@@ -694,6 +765,172 @@ async function test(name, fn) {
 
     const health = await call('/healthz');
     assert.deepEqual(health.data, { ok: true }); // no dialect, uptime or version
+  });
+
+  // --- browser verification before money moves ------------------------------------------------
+  // Requirement: "make it verify browsing first before user pays so that no one can send a raw
+  // request to my server." These tests attack the gate the way a script would.
+  const payKey = () => crypto.createHmac('sha256', process.env.JWT_SECRET).update('pay-proof-v1').digest();
+
+  /** Build a challenge exactly as the server does, so we can forge the fields the server must not trust. */
+  function forge(body, { badSignature = false } = {}) {
+    const payload = Buffer.from(JSON.stringify(body)).toString('base64url');
+    const mac = badSignature
+      ? Buffer.alloc(32, 7).toString('base64url')
+      : crypto.createHmac('sha256', payKey()).update(payload).digest('base64url');
+    return `${payload}.${mac}`;
+  }
+
+  /** Decode a genuine challenge to learn this client's own u/f, then tamper with one field of it. */
+  async function realClaim(cookie) {
+    const res = await call('/api/challenge', { cookie });
+    const payload = res.data.challenge.split('.')[0];
+    return JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+  }
+
+  await test('the challenge endpoint hands out a puzzle but nothing worth stealing', async () => {
+    const res = await call('/api/challenge');
+    assert.equal(res.status, 200);
+    assert.equal(typeof res.data.challenge, 'string');
+    assert.ok(res.data.challenge.includes('.'), 'a signed payload and its tag');
+    assert.ok(Number(res.data.bits) >= 8 && Number(res.data.bits) <= 20);
+    assert.ok(Number(res.data.expires_in) > 0);
+    assert.match(String(res.headers.get('cache-control') || ''), /no-store/);
+  });
+
+  await test('a top-up from a script with no proof is refused before Safaricom is ever called', async () => {
+    const { session } = await freshSession('attack');
+    const before = raw.prepare('SELECT COUNT(*) AS n FROM topups').get().n;
+    const res = await call('/api/wallet/topup', {
+      method: 'POST',
+      cookie: session,
+      noProof: true,
+      body: { phone: '0712345678', amount_kes: 500 },
+    });
+    assert.equal(res.status, 428);
+    assert.equal(res.data.code, 'verification_required');
+    assert.equal(res.data.reason, 'missing');
+    assert.ok(res.data.challenge, 'a challenge comes back so the app can retry silently');
+    assert.equal(raw.prepare('SELECT COUNT(*) AS n FROM topups').get().n, before, 'no prompt was requested');
+  });
+
+  await test('placing an order from a script with no proof is refused too', async () => {
+    const { session } = await freshSession('attack');
+    const res = await call('/api/orders', {
+      method: 'POST',
+      cookie: session,
+      noProof: true,
+      body: { service_id: 1, link: 'https://instagram.com/p/x', quantity: 100 },
+    });
+    assert.equal(res.status, 428, JSON.stringify(res.data));
+    assert.equal(res.data.code, 'verification_required');
+  });
+
+  await test('a stolen session cookie replayed from curl is refused: the proof is bound to the browser', async () => {
+    const { session } = await freshSession('attack');
+    // The harness solves the puzzle the way the app does (same default UA). Now replay it from
+    // somewhere else - the classic "copy the cookie out of devtools" attack.
+    const proof = await payProof(session);
+    const res = await call('/api/wallet/topup', {
+      method: 'POST',
+      cookie: session,
+      proof,
+      headers: { 'user-agent': 'curl/8.5.0', 'accept-language': 'en' },
+      body: { phone: '0712345678', amount_kes: 500 },
+    });
+    assert.equal(res.status, 428);
+    assert.equal(res.data.reason, 'browser');
+  });
+
+  await test('a forged or corrupted signature is refused', async () => {
+    const { session } = await freshSession('attack');
+    const claim = await realClaim(session);
+    const res = await call('/api/wallet/topup', {
+      method: 'POST',
+      cookie: session,
+      proof: `${forge(claim, { badSignature: true })}:0`,
+      body: { phone: '0712345678', amount_kes: 500 },
+    });
+    assert.equal(res.status, 428);
+    assert.equal(res.data.reason, 'signature');
+  });
+
+  await test('an expired challenge is refused even with a valid signature', async () => {
+    const { session } = await freshSession('attack');
+    const claim = await realClaim(session);
+    const stale = { ...claim, e: Math.floor(Date.now() / 1000) - 1 };
+    const res = await call('/api/wallet/topup', {
+      method: 'POST',
+      cookie: session,
+      proof: `${forge(stale)}:0`,
+      body: { phone: '0712345678', amount_kes: 500 },
+    });
+    assert.equal(res.status, 428);
+    assert.equal(res.data.reason, 'expired');
+  });
+
+  await test('a challenge solved for one account cannot be spent by another', async () => {
+    const { session } = await freshSession('attack');
+    const claim = await realClaim(session);
+    const res = await call('/api/wallet/topup', {
+      method: 'POST',
+      cookie: session,
+      proof: `${forge({ ...claim, u: Number(claim.u) + 1 })}:0`,
+      body: { phone: '0712345678', amount_kes: 500 },
+    });
+    assert.equal(res.status, 428);
+    assert.equal(res.data.reason, 'account');
+  });
+
+  await test('a proof without the required work is refused', async () => {
+    const { session } = await freshSession('attack');
+    const claim = await realClaim(session);
+    // Signed correctly, right account and browser, but the nonce solves nothing.
+    const res = await call('/api/wallet/topup', {
+      method: 'POST',
+      cookie: session,
+      proof: `${forge({ ...claim, b: Math.min(20, Math.max(8, claim.b) + 4) })}:0`,
+      body: { phone: '0712345678', amount_kes: 500 },
+    });
+    assert.equal(res.status, 428);
+    assert.equal(res.data.reason, 'work');
+  });
+
+  await test('even a verified browser cannot flood a phone with M-Pesa prompts', async () => {
+    const hash = require('bcryptjs').hashSync('longpassword1', 10);
+    raw.prepare('INSERT INTO users (email, password_hash, password_set, created_at) VALUES (?,?,1,?)')
+      .run('prompt-flood@panel.test', hash, Math.floor(Date.now() / 1000));
+    const uid = raw.prepare('SELECT id FROM users WHERE email = ?').get('prompt-flood@panel.test').id;
+    const t = Math.floor(Date.now() / 1000);
+    for (let i = 0; i < 5; i++) {
+      raw.prepare("INSERT INTO topups (user_id, phone, amount_kes, credited_cents, checkout_request_id, status, created_at, updated_at) VALUES (?,?,?,0,?,'pending',?,?)")
+        .run(uid, '0712345678', 500, `flood-${i}`, t, t);
+    }
+    const session = (await loginAs('prompt-flood@panel.test', 'longpassword1')).session;
+    const res = await call('/api/wallet/topup', {
+      method: 'POST',
+      cookie: session,
+      body: { phone: '0712345678', amount_kes: 500 },
+    });
+    assert.equal(res.status, 429);
+    assert.match(String(res.data.error), /last hour/i);
+  });
+
+  await test('a correctly solved proof reaches normal validation instead of the gate', async () => {
+    // A clean account, so nothing else (prompt budget, pending prompts) can answer for the gate.
+    const hash = require('bcryptjs').hashSync('longpassword1', 10);
+    raw.prepare('INSERT INTO users (email, password_hash, password_set, created_at) VALUES (?,?,1,?)')
+      .run('proof-ok@panel.test', hash, Math.floor(Date.now() / 1000));
+    const { session } = await loginAs('proof-ok@panel.test', 'longpassword1');
+    // The harness attaches a real proof; the request must now get past the gate and fail on the
+    // business rule (amount too small) rather than on verification.
+    const res = await call('/api/wallet/topup', {
+      method: 'POST',
+      cookie: session,
+      body: { phone: '0712345678', amount_kes: 1 },
+    });
+    assert.notEqual(res.status, 428);
+    assert.ok([400, 503].includes(res.status));
   });
 
   server.close();

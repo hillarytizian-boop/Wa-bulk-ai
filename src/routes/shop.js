@@ -5,6 +5,7 @@ const config = require('../config');
 const platforms = require('../platforms');
 const catalog = require('../catalog');
 const pricing = require('../pricing');
+const payguard = require('../payguard');
 const recommend = require('../recommend');
 const orders = require('../orders');
 const mpesa = require('../mpesa');
@@ -21,6 +22,16 @@ const orderLimiter = rateLimit({
   legacyHeaders: false,
   message: { error: 'Too many requests. Please slow down.' },
 });
+
+// "Prove you were browsing": the app asks for a puzzle before it can pay. Bound to the account and
+// the browser, valid for ten minutes, and cheap for a browser to solve once (see src/payguard.js).
+router.get(
+  '/challenge',
+  wrap(async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(payguard.issue(req));
+  })
+);
 
 router.get('/meta', (_req, res) => {
   res.json({
@@ -324,6 +335,7 @@ router.post(
   requireAuth,
   requireTerms,
   orderLimiter,
+  payguard.requireProof,
   wrap(async (req, res) => {
     const order = await orders.placeOrder(req.user.id, req.body || {});
     const user = await db.one('SELECT balance_cents FROM users WHERE id = $1', [req.user.id]);

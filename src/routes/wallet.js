@@ -6,18 +6,40 @@ const config = require('../config');
 const mpesa = require('../mpesa');
 const { HttpError, wrap } = require('../errors');
 const { requireAuth } = require('./auth');
+const payguard = require('../payguard');
 
 const router = express.Router();
 const now = () => Math.floor(Date.now() / 1000);
 const iso = (t) => new Date(t * 1000).toISOString();
 
+// Keyed by account, not by IP: the thing being protected is one person's phone, and a shared office
+// or Safaricom NAT should not spend a neighbour's allowance. requireAuth runs first, so req.user is set.
 const topupLimiter = rateLimit({
   windowMs: 10 * 60 * 1000,
   limit: 8,
   standardHeaders: true,
   legacyHeaders: false,
+  keyGenerator: (req) => (req.user ? `u${req.user.id}` : String(req.ip || 'ip')),
   message: { error: 'Too many top-up attempts. Please wait a few minutes.' },
 });
+
+// An M-Pesa prompt is a real SMS to a real phone. Two hard caps on top of the soft limiter above,
+// because the abuse case here is not "too many requests" but "somebody's phone gets buzzed".
+const PROMPTS_PER_HOUR = Number(process.env.PROMPTS_PER_HOUR || 5);
+const PROMPTS_PER_DAY = Number(process.env.PROMPTS_PER_DAY || 15);
+
+async function promptBudget(userId) {
+  const t = now();
+  const hour = await db.one('SELECT COUNT(*) AS n FROM topups WHERE user_id = $1 AND created_at > $2', [
+    userId,
+    t - 3600,
+  ]);
+  const day = await db.one('SELECT COUNT(*) AS n FROM topups WHERE user_id = $1 AND created_at > $2', [
+    userId,
+    t - 86400,
+  ]);
+  return { hour: Number(hour.n), day: Number(day.n) };
+}
 
 router.get(
   '/',
@@ -43,7 +65,12 @@ router.get(
 router.post(
   '/topup',
   requireAuth,
+  // Order matters: the browser proof runs before a single byte of the prompt is built, the input is
+  // validated before it costs anything, and the prompt budget is checked before PayHero is called.
+  // A raw request that skipped the app fails at the first gate. A script that passes it still runs
+  // into the hourly/daily prompt allowance below - every prompt is a real SMS to a real phone.
   topupLimiter,
+  payguard.requireProof,
   wrap(async (req, res) => {
     if (!mpesa.enabled) throw new HttpError(503, 'M-Pesa top-ups are not enabled. Please contact support.');
 
@@ -52,6 +79,15 @@ router.post(
     if (!Number.isInteger(amountKes) || amountKes < config.minTopupKes || amountKes > config.maxTopupKes) {
       throw new HttpError(400, `Amount must be a whole number between KES ${config.minTopupKes} and KES ${config.maxTopupKes}`);
     }
+
+    const used = await promptBudget(req.user.id);
+    if (used.day >= PROMPTS_PER_DAY) {
+      throw new HttpError(429, 'That is a lot of M-Pesa prompts today. Use the WhatsApp line if you are stuck.');
+    }
+    if (used.hour >= PROMPTS_PER_HOUR) {
+      throw new HttpError(429, `You have asked for ${used.hour} M-Pesa prompts in the last hour. Wait a little, then try again.`);
+    }
+
     const pending = await db.one(
       "SELECT COUNT(*) AS n FROM topups WHERE user_id = $1 AND status = 'pending' AND created_at > $2",
       [req.user.id, now() - 600]

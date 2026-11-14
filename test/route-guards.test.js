@@ -33,6 +33,7 @@ const PUBLIC = new Map([
   ['GET /api/trending', 'public "hot right now" shelf'],
   ['POST /api/recommend', 'paste-a-link finder'],
   ['POST /api/events', 'aggregate funnel counter; allowlisted names only, no identifier stored'],
+  ['GET /api/challenge', 'hands out the browser-verification puzzle; solving it is the credential'],
   ['GET /api/auth/me', 'answers {user:null} when there is no session'],
   ['POST /api/auth/login', 'sign-in'],
   ['POST /api/auth/register', 'sign-up'],
