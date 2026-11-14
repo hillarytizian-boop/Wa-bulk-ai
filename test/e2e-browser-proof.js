@@ -1,3 +1,19 @@
+// Real-browser end-to-end check for the "verify browsing before you pay" gate.
+//
+// NOT part of `npm test`: it needs Playwright and a Chromium build, which are development-machine
+// concerns, not deployment ones.
+//
+//   npm i -D playwright && npx playwright install chromium
+//   node test/e2e-browser-proof.js
+//
+// On a bare Linux box Chromium also needs the usual GTK/NSS shared libraries
+// (libnspr4, libnss3, libatk*, libxkbcommon, libgbm1 ...). It starts its own server on port 3077 with
+// a throwaway SQLite database and throwaway PayHero credentials (no real prompt is ever requested).
+//
+// What it proves: a raw HTTP client holding a valid session cookie is refused (428), a genuine
+// browser solves the challenge with WebCrypto in ~100 ms, the app's own top-up request carries the
+// proof, and the wallet screen tells the customer the browser is verified.
+
 // End-to-end: does a REAL browser get through the "verify browsing before you pay" gate,
 // and is the same request without a browser refused? Run against a local server.
 const { chromium } = require('playwright');
