@@ -101,8 +101,8 @@ async function request(params, { idempotencyKey, retries = 2, budgetMs = 0 } = {
 
 module.exports = {
   ProviderError,
-  balance: () => request({ action: 'balance' }),
-  services: () => request({ action: 'services' }),
+  balance: () => request({ action: 'balance' }, { retries: 1, budgetMs: config.smm.submitBudgetMs }),
+  services: () => request({ action: 'services' }, { retries: 1, budgetMs: config.smm.submitBudgetMs }),
   add: (payload, idempotencyKey, opts = {}) =>
     request({ action: 'add', ...payload, idempotency_key: idempotencyKey }, { idempotencyKey, ...opts }),
   // Read-only calls: never retried on our side (the poller runs again in 30s anyway) and given a

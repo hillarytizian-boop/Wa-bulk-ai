@@ -44,13 +44,21 @@ async function load(force = false) {
   }
 }
 
+// A forced refresh costs a supplier round-trip (~6s on a slow day). Unknown ids arrive from stale
+// bookmarks and fat-fingered links, so remember the answer: one refresh a minute is enough to pick up
+// genuinely new services, and a bad id then fails in milliseconds instead of holding the request.
+let lastForce = 0;
+const FORCE_EVERY_MS = 60 * 1000;
+
 async function getService(id) {
   const numeric = Number(id);
   if (!Number.isFinite(numeric)) return null;
   const c = await load();
   const hit = c.byId.get(numeric);
   if (hit) return hit;
+  if (Date.now() - lastForce < FORCE_EVERY_MS) return null;
   // Catalog may be stale: refresh once before declaring the service missing.
+  lastForce = Date.now();
   const fresh = await load(true);
   return fresh.byId.get(numeric) || null;
 }

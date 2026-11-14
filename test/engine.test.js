@@ -333,6 +333,17 @@ async function test(name, fn) {
     }
   });
 
+  await test('an unknown service id fails fast instead of paying for a supplier refresh', async () => {
+    // The first unknown id is allowed to refresh the catalogue (a new service may exist); the next
+    // one must not, or a stale bookmark costs a supplier round-trip on every click.
+    await orders.placeOrder(uid, { service: 1, link: 'https://x.co/a', quantity: 100 }).catch(() => {});
+    const started = Date.now();
+    await reject(orders.placeOrder(uid, { service: 999, link: 'https://x.co/a', quantity: 100 }), 404);
+    await reject(orders.placeOrder(uid, { service: 998, link: 'https://x.co/a', quantity: 100 }), 404);
+    const took = Date.now() - started;
+    assert.ok(took < 500, `two unknown ids answered in ${took}ms`);
+  });
+
   // ---------------------------------------------------------------- never hang the browser
   await test('a supplier that never answers cannot hang the order request past its budget', async () => {
     const config = require('../src/config');
