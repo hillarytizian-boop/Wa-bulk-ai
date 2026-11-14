@@ -210,6 +210,9 @@ const quoteDefault = (value) => (typeof value === 'number' ? String(value) : `'$
 const ADDITIONS = [
   ['users', 'terms_accepted_at', 'BIGINT', '0'],
   ['users', 'terms_version', 'TEXT', "''"],
+  // The browser's own idempotency tag for one "Place order" click, so a retried request after a
+  // dropped connection returns the original order instead of charging twice.
+  ['orders', 'client_ref', 'TEXT', "''"],
 ];
 
 function renderAdditions() {

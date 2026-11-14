@@ -46,7 +46,15 @@ module.exports = {
   smm: {
     url: process.env.SMM_API_URL || 'https://smm.africa/api/v3',
     key: process.env.SMM_API_KEY || '',
-    timeoutMs: num(process.env.SMM_TIMEOUT_MS, 60000),
+    // One supplier call, one attempt. Kept well under the 60s serverless limit so the *whole* request
+    // (attempt + retries) can finish and answer, instead of being killed mid-flight.
+    timeoutMs: num(process.env.SMM_TIMEOUT_MS, 12000),
+    // Total time one HTTP request may spend talking to the supplier, retries included.
+    submitBudgetMs: num(process.env.SMM_SUBMIT_BUDGET_MS, 22000),
+    // One status poll. Cheap, idempotent, repeated in 30s - so it must never hold a page open.
+    pollBudgetMs: num(process.env.SMM_POLL_BUDGET_MS, 4000),
+    // Total time GET /api/orders may spend refreshing a customer's active orders.
+    pollSweepBudgetMs: num(process.env.SMM_POLL_SWEEP_BUDGET_MS, 6000),
     retryBaseMs: num(process.env.SMM_RETRY_BASE_MS, 2000),
     maxSubmitAttempts: num(process.env.SMM_MAX_ATTEMPTS, 8),
   },

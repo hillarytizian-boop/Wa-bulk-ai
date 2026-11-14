@@ -7,6 +7,7 @@
 //   FLAKY     -> provider creates the order but answers 503 the first 3 times (lost response)
 //   PARTIAL   -> order finishes as "partial" with 40% remaining
 //   CANCELME  -> order becomes "canceled" once a cancel request has been made
+//   HANG      -> the provider never answers, so the client's own timeout has to save the request
 const http = require('http');
 
 const API_KEY = 'test-key';
@@ -54,6 +55,8 @@ function createMock() {
         const svc = SERVICES.find((s) => s.service === Number(p.service));
         if (!svc) return json(res, 400, { error: 'Service not found' });
         if (String(p.link || '').includes('REJECT')) return json(res, 400, { error: 'Link is invalid' });
+        // Accept the request and never answer: only the client's timeout gets us out of this.
+        if (String(p.link || '').includes('HANG')) return;
 
         let qty;
         if (svc.type === 'Custom Comments') {

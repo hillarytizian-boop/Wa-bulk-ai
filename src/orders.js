@@ -121,9 +121,23 @@ function buildDetails(service, input) {
   return { details, quantity, payload };
 }
 
+/** A client-generated idempotency tag: one per "Place order" click, reused by any retry. */
+const cleanClientRef = (value) => {
+  const v = String(value || '').trim();
+  return /^[A-Za-z0-9_-]{8,64}$/.test(v) ? v : '';
+};
+
 async function placeOrder(userId, input) {
   const serviceId = Number(input && input.service);
   if (!Number.isInteger(serviceId) || serviceId <= 0) throw new HttpError(400, 'Choose a service');
+
+  // A dropped connection must never cost the customer twice. The browser sends the same client_ref
+  // on its automatic retry, so a second attempt returns the order the first one created.
+  const clientRef = cleanClientRef(input && input.client_ref);
+  if (clientRef) {
+    const prior = await db.one('SELECT * FROM orders WHERE user_id = $1 AND client_ref = $2', [userId, clientRef]);
+    if (prior) return prior;
+  }
 
   const service = await catalog.getService(serviceId);
   if (!service) throw new HttpError(404, 'Service not found');
@@ -145,8 +159,8 @@ async function placeOrder(userId, input) {
     const inserted = await t.one(
       `INSERT INTO orders (user_id, service_id, service_name, service_type, category, link, quantity, details,
          refill_allowed, cancel_allowed, price_cents, markup, kes_per_usd, fee_cents, status, idempotency_key,
-         attempts, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,0,$17,$18)
+         client_ref, attempts, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,0,$18,$19)
        RETURNING id`,
       [
         userId,
@@ -165,6 +179,7 @@ async function placeOrder(userId, input) {
         settings.feeCents,
         SUBMITTING,
         idem,
+        clientRef,
         t0,
         t0,
       ]
@@ -234,7 +249,9 @@ async function submitOrder(orderId) {
   await db.run('UPDATE orders SET attempts = attempts + 1, updated_at = $1 WHERE id = $2', [now(), order.id]);
 
   try {
-    const res = await smm.add(JSON.parse(order.details), order.idempotency_key);
+    const res = await smm.add(JSON.parse(order.details), order.idempotency_key, {
+      budgetMs: config.smm.submitBudgetMs,
+    });
     const providerOrderId = res && res.order != null ? String(res.order) : null;
     if (!providerOrderId) throw new smm.ProviderError('Provider did not return an order id', { ambiguous: true });
     const charged = res.charged != null ? Number(res.charged) : null;
@@ -401,8 +418,19 @@ async function pollActive(limit = 40) {
     [...ACTIVE_STATUSES, limit]
   );
   const due = rows.filter((o) => now() - Number(o.last_polled_at) >= pollIntervalFor(o));
-  for (const o of due) await syncOrder(o.id);
-  return due.length;
+  // Same hard budget as the customer-facing sweep: the cron function is killed at 60s, and whatever
+  // is left over is picked up by the next tick (or by the customer's own page view).
+  const until = Date.now() + config.smm.pollSweepBudgetMs * 4;
+  let n = 0;
+  for (const o of due) {
+    if (Date.now() >= until) {
+      console.warn('[orders] cron poll sweep ran out of time; the rest is picked up next tick');
+      break;
+    }
+    await syncOrder(o.id);
+    n += 1;
+  }
+  return n;
 }
 
 /**
@@ -411,6 +439,10 @@ async function pollActive(limit = 40) {
  * last_polled_at, and capped per request).
  */
 async function pollUserActive(userId, limit = 5) {
+  // This runs inside GET /api/orders. A serverless function is killed at its platform limit, so the
+  // whole sweep gets a hard wall-clock budget: an unreachable supplier must never turn the orders
+  // page into a "Failed to fetch".
+  const until = Date.now() + config.smm.pollSweepBudgetMs;
   const placeholders = ACTIVE_STATUSES.map((_, i) => `$${i + 2}`).join(',');
   const rows = await db.all(
     `SELECT * FROM orders WHERE user_id = $1 AND status IN (${placeholders}) AND provider_order_id IS NOT NULL
@@ -419,6 +451,10 @@ async function pollUserActive(userId, limit = 5) {
   );
   let n = 0;
   for (const o of rows) {
+    if (Date.now() >= until) {
+      console.warn('[orders] poll sweep ran out of time; the rest is picked up by the cron/lazy poll');
+      break;
+    }
     if (now() - Number(o.last_polled_at) < pollIntervalFor(o)) continue;
     await syncOrder(o.id);
     n += 1;

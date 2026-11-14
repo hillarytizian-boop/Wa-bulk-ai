@@ -333,6 +333,60 @@ async function test(name, fn) {
     }
   });
 
+  // ---------------------------------------------------------------- never hang the browser
+  await test('a supplier that never answers cannot hang the order request past its budget', async () => {
+    const config = require('../src/config');
+    const saved = { timeout: config.smm.timeoutMs, budget: config.smm.submitBudgetMs };
+    config.smm.timeoutMs = 600;
+    config.smm.submitBudgetMs = 1500;
+    const before = balance();
+    try {
+      const started = Date.now();
+      // The mock accepts this order and never replies: the only way out is our own budget.
+      const o = await orders.placeOrder(uid, { service: 1, link: 'https://x.co/HANG', quantity: 100 });
+      const took = Date.now() - started;
+      assert.ok(took < 4000, `answered in ${took}ms, well inside a serverless function's 60s limit`);
+      assert.equal(o.status, 'submitting', 'the order is held pending, not lost');
+      assert.equal(balance(), before - 1670, 'charged once and left pending: an unknown outcome is never refunded');
+    } finally {
+      config.smm.timeoutMs = saved.timeout;
+      config.smm.submitBudgetMs = saved.budget;
+    }
+  });
+
+  await test('the status poller stops at its sweep budget instead of hanging GET /orders', async () => {
+    const config = require('../src/config');
+    const saved = { budget: config.smm.pollBudgetMs, sweep: config.smm.pollSweepBudgetMs };
+    config.smm.pollBudgetMs = 400;
+    config.smm.pollSweepBudgetMs = 900;
+    const goodUrl = config.smm.url;
+    // Five active orders, and a supplier that answers nothing.
+    raw.prepare("UPDATE orders SET provider_order_id = 'x', status = 'in_progress', last_polled_at = 0").run();
+    config.smm.url = 'http://127.0.0.1:1/api/v3';
+    try {
+      const started = Date.now();
+      await orders.pollUserActive(uid, 5);
+      const took = Date.now() - started;
+      assert.ok(took < 6000, `sweep returned in ${took}ms`);
+    } finally {
+      config.smm.url = goodUrl;
+      config.smm.pollBudgetMs = saved.budget;
+      config.smm.pollSweepBudgetMs = saved.sweep;
+      raw.prepare("UPDATE orders SET status = 'completed', last_polled_at = 0").run();
+    }
+  });
+
+  await test('a retried "Place order" click with the same client_ref never charges twice', async () => {
+    setBalanceKes(1000);
+    const before = balance();
+    const input = { service: 4, link: 'https://x.co/once', quantity: 1000, client_ref: 'ref-abcdef123456' };
+    const first = await orders.placeOrder(uid, input);
+    const again = await orders.placeOrder(uid, input); // what the browser does after a dropped connection
+    assert.equal(again.id, first.id, 'the same client_ref returns the original order');
+    assert.equal(raw.prepare('SELECT COUNT(*) AS n FROM orders WHERE client_ref = ?').get('ref-abcdef123456').n, 1);
+    assert.equal(balance(), before - Number(first.price_cents), 'charged once');
+  });
+
   for (const ext of ['', '-wal', '-shm']) fs.rmSync(dbFile + ext, { force: true });
   mock.server.close();
 

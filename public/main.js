@@ -195,12 +195,22 @@
       // May take a few hundred milliseconds the first time; the screens warm it in the background.
       try { headers['x-pay-proof'] = await getPayProof(); } catch { /* the server will ask */ }
     }
-    const res = await fetch(`/api${path}`, {
-      method,
-      credentials: 'same-origin',
-      headers,
-      body: body ? JSON.stringify(body) : undefined,
-    });
+    let res;
+    try {
+      res = await fetch(`/api${path}`, {
+        method,
+        credentials: 'same-origin',
+        headers,
+        body: body ? JSON.stringify(body) : undefined,
+      });
+    } catch (cause) {
+      // fetch only rejects when the request never got an answer: no signal, a dropped connection,
+      // or the function was killed mid-flight. "Failed to fetch" tells a customer nothing.
+      const err = new Error('No connection to the server. Check your internet and try again.');
+      err.offline = true;
+      err.cause = cause;
+      throw err;
+    }
     let data = null;
     try { data = await res.json(); } catch { /* empty / non-JSON */ }
     // 428 = the proof expired or was never solved. Solve a fresh one and retry exactly once.
@@ -1249,6 +1259,9 @@
     const totalEl = h('div', { class: 'v big' }, '—');
     const note   = h('div', { class: 'hint' });
     const btn    = h('button', { class: 'btn block' }, 'Place order');
+    // One tag per click, reused by the retry below: the server answers a repeat of the same tag with
+    // the order it already created, so a dropped connection can never charge the wallet twice.
+    const clientRef = () => (window.crypto && crypto.randomUUID ? crypto.randomUUID().replace(/-/g, '') : `r${Date.now()}${Math.random().toString(36).slice(2, 10)}`);
     const shortfallHost = h('div');
 
     function localTotal() {
@@ -1304,22 +1317,34 @@
 
     btn.addEventListener('click', async () => {
       if (!state.user) { toast('Please log in to place an order.', true); location.hash = '#/login'; return; }
-      const body = { service: service.id };
+      const body = { service: service.id, client_ref: clientRef() };
       for (const [k, el] of Object.entries(inputs)) body[k] = el.value.trim();
       btn.disabled = true;
+      let res;
       try {
-        const res = await api('/orders', { method: 'POST', body });
-        setBalance(res.balance_cents);
-        track('order_placed');
-        toast(`Order #${res.order.id} placed.`);
-        location.hash = '#/orders';
+        try {
+          res = await api('/orders', { method: 'POST', body });
+        } catch (e) {
+          if (!e.offline) throw e;
+          // The connection dropped before we saw an answer. Same tag, one more attempt.
+          await new Promise((r) => setTimeout(r, 1200));
+          res = await api('/orders', { method: 'POST', body });
+        }
       } catch (e) {
         btn.disabled = false;
-        toast(e.message, true);
+        // Still no answer after the retry: the order may exist anyway, so point at the list rather
+        // than inviting a second click that could buy the same thing twice.
+        if (e.offline) toast('Could not confirm the order. Check your Orders page before trying again.', true);
+        else toast(e.message, true);
         // 402: the wallet is short. Offer to collect exactly the difference right here, so the
         // customer does not have to remember the amount, walk to the wallet and come back.
         if (e.status === 402) offerShortfall(shortfallHost, Math.max(0, localTotal() - (state.user.balance_cents || 0)));
+        return;
       }
+      setBalance(res.balance_cents);
+      track('order_placed');
+      toast(`Order #${res.order.id} placed.`);
+      location.hash = '#/orders';
     });
 
     fill(info,

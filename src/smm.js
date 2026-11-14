@@ -27,22 +27,34 @@ const RETRY_STATUS = new Set([429, 500, 502, 503, 504]);
  * Retries reuse the exact same body and idempotency key, so a lost response can never
  * create a second provider order.
  */
-async function request(params, { idempotencyKey, retries = 2 } = {}) {
+async function request(params, { idempotencyKey, retries = 2, budgetMs = 0 } = {}) {
   if (!config.smm.key) throw new ProviderError('Provider API key is not configured', { status: 0 });
 
   const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${config.smm.key}` };
   if (idempotencyKey) headers['Idempotency-Key'] = idempotencyKey;
   const body = JSON.stringify(params);
 
+  // Wall-clock budget for the whole call, retries included. A serverless function is killed at its
+  // platform limit (60s on Vercel); without this the request dies mid-flight, the browser reports
+  // "Failed to fetch" and the customer cannot tell whether the order exists.
+  const deadline = budgetMs > 0 ? Date.now() + budgetMs : 0;
+  const remaining = () => (deadline ? deadline - Date.now() : Infinity);
+
   let lastErr;
   for (let attempt = 0; attempt <= retries; attempt++) {
+    if (deadline && remaining() <= 500) {
+      lastErr = lastErr || new ProviderError('Provider did not answer in time', { ambiguous: true });
+      lastErr.ambiguous = true;
+      lastErr.budgetExhausted = true;
+      throw lastErr;
+    }
     let res;
     try {
       res = await fetch(config.smm.url, {
         method: 'POST',
         headers,
         body,
-        signal: AbortSignal.timeout(config.smm.timeoutMs),
+        signal: AbortSignal.timeout(Math.max(1000, Math.min(config.smm.timeoutMs, remaining() === Infinity ? config.smm.timeoutMs : remaining()))),
       });
     } catch (err) {
       // Timeout / network error: the provider may or may not have processed it.
@@ -91,8 +103,11 @@ module.exports = {
   ProviderError,
   balance: () => request({ action: 'balance' }),
   services: () => request({ action: 'services' }),
-  add: (payload, idempotencyKey) => request({ action: 'add', ...payload, idempotency_key: idempotencyKey }, { idempotencyKey }),
-  status: (order) => request({ action: 'status', order }),
-  refill: (order) => request({ action: 'refill', order }),
-  cancel: (order) => request({ action: 'cancel', order }),
+  add: (payload, idempotencyKey, opts = {}) =>
+    request({ action: 'add', ...payload, idempotency_key: idempotencyKey }, { idempotencyKey, ...opts }),
+  // Read-only calls: never retried on our side (the poller runs again in 30s anyway) and given a
+  // short budget, so a page that polls five orders cannot blow past the serverless time limit.
+  status: (order, opts = {}) => request({ action: 'status', order }, { retries: 0, budgetMs: config.smm.pollBudgetMs, ...opts }),
+  refill: (order, opts = {}) => request({ action: 'refill', order }, { budgetMs: config.smm.submitBudgetMs, ...opts }),
+  cancel: (order, opts = {}) => request({ action: 'cancel', order }, { budgetMs: config.smm.submitBudgetMs, ...opts }),
 };
