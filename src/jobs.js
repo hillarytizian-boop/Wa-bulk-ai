@@ -67,16 +67,37 @@ async function providerBalanceWatch() {
   return { checked: true, balance_usd: balance, alerted: false };
 }
 
+// ---------------------------------------------------------------- housekeeping
+//
+// Password-reset rows are credentials-adjacent bookkeeping, not history: once a link is used or
+// expired it has no purpose, and keeping it forever means a growing list of user ids and IPs. One
+// week is generous (the link itself dies in 30 minutes).
+const RESET_RETENTION_SEC = 7 * 24 * 3600;
+
+async function janitor() {
+  const now = Math.floor(Date.now() / 1000);
+  const resets = await db.run(
+    'DELETE FROM password_resets WHERE expires_at < $1 OR (used_at > 0 AND used_at < $1)',
+    [now - RESET_RETENTION_SEC]
+  );
+  const counts = await db.run('DELETE FROM rate_limits WHERE window_start < $1', [now - 86400]);
+  return {
+    resets: Number((resets && (resets.rowCount ?? resets.changes)) || 0),
+    rate_limits: Number((counts && (counts.rowCount ?? counts.changes)) || 0),
+  };
+}
+
 /** Run every maintenance task once. Safe to call concurrently (guarded). */
 async function tick({ log = () => {} } = {}) {
   if (running) return { skipped: true };
   running = true;
-  const out = { polled: 0, recovered: 0, mpessa: 0, provider: null };
+  const out = { polled: 0, recovered: 0, mpessa: 0, provider: null, cleaned: null };
   try {
     out.recovered = await orders.recoverSubmitting();
     out.polled = await orders.pollActive();
     out.mpesa = await mpesa.reconcilePending();
     out.provider = await providerBalanceWatch();
+    out.cleaned = await janitor();
     if (out.recovered) log(`[jobs] retried ${out.recovered} unconfirmed submission(s)`);
     if (out.polled) log(`[jobs] polled ${out.polled} order(s)`);
     if (out.mpesa) log(`[jobs] reconciled ${out.mpesa} pending top-up(s)`);
@@ -122,4 +143,4 @@ function stop() {
   timers.length = 0;
 }
 
-module.exports = { start, stop, tick, providerBalanceWatch };
+module.exports = { start, stop, tick, providerBalanceWatch, janitor };

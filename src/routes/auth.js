@@ -20,6 +20,16 @@ const DUMMY_HASH = bcrypt.hashSync('not-a-real-password', ROUNDS);
 
 const BCRYPT_MAX_BYTES = 72; // bcrypt silently truncates beyond this
 
+/** True for a unique-constraint violation on either driver (Postgres 23505, SQLite constraint). */
+function isDuplicateKey(err) {
+  if (!err) return false;
+  if (String(err.code) === '23505') return true; // Postgres unique_violation
+  if (String(err.code || '').startsWith('SQLITE_CONSTRAINT')) return true;
+  return /duplicate key value violates unique constraint|unique constraint failed|UNIQUE constraint/i.test(
+    String(err.message || '')
+  );
+}
+
 const COOKIE_OPTS = {
   httpOnly: true,
   sameSite: 'strict',
@@ -146,8 +156,10 @@ router.post(
       );
       id = inserted.id;
     } catch (err) {
-      if (String(err.code).startsWith('SQLITE_CONSTRAINT')) {
-        throw new HttpError(409, 'That email cannot be used. Try logging in instead.');
+      // Postgres reports a unique violation as 23505; SQLite as SQLITE_CONSTRAINT. The old check
+      // only knew the SQLite code, so on production a duplicate sign-up surfaced as a 500.
+      if (isDuplicateKey(err)) {
+        throw new HttpError(409, 'An account with that email already exists. Try logging in instead.');
       }
       throw err;
     }
@@ -300,24 +312,29 @@ router.post(
     assertPassword(password);
     if (!token) throw new HttpError(400, 'That reset link is missing its token');
 
-    const row = await db.one(
-      'SELECT * FROM password_resets WHERE token_hash = $1',
-      [sha256(token)]
+    const hash = await bcrypt.hash(password, ROUNDS);
+    // Atomic single use: the UPDATE both validates and claims the token in one statement, so two
+    // requests racing on the same link cannot both win. RETURNING gives the owner back only to the
+    // request that actually changed the row.
+    const claim = await db.one(
+      `UPDATE password_resets SET used_at = $1
+        WHERE token_hash = $2 AND used_at = 0 AND expires_at > $1
+        RETURNING user_id`,
+      [now(), sha256(token)]
     );
-    if (!row || Number(row.used_at) || Number(row.expires_at) <= now()) {
-      throw new HttpError(400, 'That reset link has expired. Request a new one.');
+    if (!claim) {
+      // Distinguish the three reasons only for the person who no longer has a usable link.
+      const seen = await db.one('SELECT used_at FROM password_resets WHERE token_hash = $1', [sha256(token)]);
+      throw new HttpError(
+        400,
+        seen && Number(seen.used_at)
+          ? 'That reset link has already been used. Request a new one.'
+          : 'That reset link has expired. Request a new one.'
+      );
     }
 
-    const user = await db.one('SELECT * FROM users WHERE id = $1', [row.user_id]);
+    const user = await db.one('SELECT * FROM users WHERE id = $1', [claim.user_id]);
     if (!user) throw new HttpError(400, 'That account no longer exists');
-
-    const hash = await bcrypt.hash(password, ROUNDS);
-    // Single use: mark used first, then only proceed if this call was the one that claimed it.
-    const claim = await db.run('UPDATE password_resets SET used_at = $1 WHERE id = $2 AND used_at = 0', [
-      now(),
-      row.id,
-    ]);
-    if (claim && claim.changes === 0) throw new HttpError(400, 'That reset link has already been used');
 
     await db.run(
       'UPDATE users SET password_hash = $1, password_set = 1, token_version = token_version + 1 WHERE id = $2',
@@ -478,4 +495,4 @@ router.get(
   })
 );
 
-module.exports = { router, loadUser, requireAuth, requireAdmin, publicUser, COOKIE, COOKIE_OPTS };
+module.exports = { router, loadUser, requireAuth, requireAdmin, publicUser, COOKIE, COOKIE_OPTS, isDuplicateKey };

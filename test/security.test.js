@@ -315,6 +315,46 @@ async function test(name, fn) {
     assert.ok(!dump.includes('x@y.z'), 'event rows carry no email');
   });
 
+  await test('body cap: a request over 100 KB is refused with 413 before it is processed', async () => {
+    const big = 'x'.repeat(200 * 1024);
+    const res = await call('/api/auth/login', {
+      method: 'POST',
+      body: { email: 'a@b.co', password: big },
+    });
+    assert.equal(res.status, 413, 'the Vercel runtime pre-parses bodies, so the cap must be explicit');
+    const small = await call('/api/auth/login', { method: 'POST', body: { email: 'a@b.co', password: 'short' } });
+    assert.notEqual(small.status, 413, 'normal requests still get through');
+  });
+
+  await test('password reset: two racing requests on one token -> exactly one wins', async () => {
+    const crypto = require('crypto');
+    const now = Math.floor(Date.now() / 1000);
+    const token = 'c'.repeat(64);
+    const user = raw.prepare('SELECT id FROM users WHERE email = ?').get('reset-target@panel.test');
+    raw.prepare('INSERT INTO password_resets (user_id, token_hash, expires_at, used_at, ip, created_at) VALUES (?,?,?,0,?,?)')
+      .run(user.id, crypto.createHash('sha256').update(token).digest('hex'), now + 600, '127.0.0.1', now);
+    const [a, b] = await Promise.all([
+      call('/api/auth/reset', { method: 'POST', body: { token, password: 'Raced!Passw0rd-1' } }),
+      call('/api/auth/reset', { method: 'POST', body: { token, password: 'Raced!Passw0rd-2' } }),
+    ]);
+    const codes = [a.status, b.status].sort();
+    assert.deepEqual(codes, [200, 400], 'a link is worth exactly one reset');
+  });
+
+  await test('duplicate sign-up is a 409 on both drivers, never a 500', async () => {
+    const { isDuplicateKey } = require('../src/routes/auth');
+    assert.equal(isDuplicateKey({ code: '23505' }), true, 'Postgres unique_violation');
+    assert.equal(isDuplicateKey({ code: 'SQLITE_CONSTRAINT_UNIQUE' }), true, 'SQLite constraint');
+    assert.equal(isDuplicateKey({ code: '23503' }), false, 'foreign key violation is not a duplicate');
+    assert.equal(isDuplicateKey(null), false);
+
+    const body = { email: 'dup-check@panel.test', password: 'Dupe!Passw0rd-1', accept_terms: true };
+    const first = await call('/api/auth/register', { method: 'POST', body });
+    assert.equal(first.status, 201);
+    const second = await call('/api/auth/register', { method: 'POST', body });
+    assert.equal(second.status, 409);
+  });
+
   await test('password change requires the current password and a >=8 char new one', async () => {
     const session = (await loginAs(ADMIN_EMAIL, ADMIN_PASSWORD)).session;
     const bad = await call('/api/auth/password', {

@@ -68,6 +68,27 @@ function createApp() {
       /invalid json|unexpected end of json|json at position|unexpected token|malformed|stream is not readable|already finished|aborted/i.test(String(err.message || ''))
     );
   };
+  // Body cap. `express.json({ limit })` only protects the stream we parse ourselves; the Vercel
+  // runtime reads and parses the body before this app runs, so the app-level limit never applied in
+  // production and a 2 MB body sailed straight through to a handler. Announce, then check, the size
+  // before anything else touches it.
+  const MAX_BODY_BYTES = 100 * 1024;
+  app.use('/api', (req, res, next) => {
+    const declared = Number(req.get('content-length') || 0);
+    if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) {
+      return res.status(413).json({ error: 'Request too large' });
+    }
+    if (
+      req.body &&
+      typeof req.body === 'object' &&
+      !Buffer.isBuffer(req.body) &&
+      Buffer.byteLength(JSON.stringify(req.body)) > MAX_BODY_BYTES
+    ) {
+      return res.status(413).json({ error: 'Request too large' });
+    }
+    next();
+  });
+
   app.use((req, res, next) => {
     if (req.body !== undefined) return next(); // runtime already parsed it
     if (req.readableEnded || (req._readableState && req._readableState.endEmitted)) {
@@ -153,6 +174,7 @@ function createApp() {
     res.setHeader('X-Robots-Tag', 'noindex, nofollow');
     next();
   });
+
 
   // Load the editable pricing settings once per cold start (cheap no-op afterwards).
   app.use('/api', async (_req, _res, next) => {
