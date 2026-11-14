@@ -1319,7 +1319,10 @@
       if (!state.user) { toast('Please log in to place an order.', true); location.hash = '#/login'; return; }
       const body = { service: service.id, client_ref: clientRef() };
       for (const [k, el] of Object.entries(inputs)) body[k] = el.value.trim();
+      // The supplier answers in a few seconds. Say so, instead of a dead button.
+      const label = btn.textContent;
       btn.disabled = true;
+      btn.textContent = 'Placing your order…';
       let res;
       try {
         try {
@@ -1332,6 +1335,7 @@
         }
       } catch (e) {
         btn.disabled = false;
+        btn.textContent = label;
         // Still no answer after the retry: the order may exist anyway, so point at the list rather
         // than inviting a second click that could buy the same thing twice.
         if (e.offline) toast('Could not confirm the order. Check your Orders page before trying again.', true);
