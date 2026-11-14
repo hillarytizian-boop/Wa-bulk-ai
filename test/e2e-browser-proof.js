@@ -1,19 +1,3 @@
-// Real-browser end-to-end check for the "verify browsing before you pay" gate.
-//
-// NOT part of `npm test`: it needs Playwright and a Chromium build, which are development-machine
-// concerns, not deployment ones.
-//
-//   npm i -D playwright && npx playwright install chromium
-//   node test/e2e-browser-proof.js
-//
-// On a bare Linux box Chromium may also need the usual GTK/NSS shared libraries
-// (libnspr4, libnss3, libatk*, libxkbcommon, libgbm1 ...). It starts its own server on port 3077 with
-// a throwaway SQLite database and throwaway PayHero credentials (no real prompt is ever requested).
-//
-// What it proves: a raw HTTP client holding a valid session cookie is refused (428), a genuine
-// browser solves the challenge with WebCrypto in ~100 ms, the app's own top-up request carries the
-// proof, and the wallet screen tells the customer the browser is verified.
-
 // End-to-end: does a REAL browser get through the "verify browsing before you pay" gate,
 // and is the same request without a browser refused? Run against a local server.
 const { chromium } = require('playwright');
@@ -178,6 +162,7 @@ const rm = () => ['', '-wal', '-shm'].forEach((e) => fs.rmSync(DB + e, { force: 
     });
     check('the pay button is enabled once verified', Boolean(btnState && !btnState.disabled), JSON.stringify(btnState));
 
+    await page.screenshot({ path: '/tmp/e2e/wallet-verified.png', fullPage: false });
     if (btnState) {
       await page.fill('input[type="tel"]', '0712345678').catch(() => {});
       await page.click('button:has-text("Send M-Pesa prompt")').catch(() => {});
@@ -185,7 +170,7 @@ const rm = () => ['', '-wal', '-shm'].forEach((e) => fs.rmSync(DB + e, { force: 
     }
     check('the app sent a proof with its own request (no 428 loop)', seen.some((s) => /proof=true/.test(s)), seen.join(' | ') || 'no calls');
 
-    await page.screenshot({ path: '/tmp/e2e/wallet-verified.png', fullPage: false });
+    await page.screenshot({ path: '/tmp/e2e/wallet-after-click.png', fullPage: false });
     await browser.close();
   } catch (err) {
     check(`harness error: ${err.message}`, false);
