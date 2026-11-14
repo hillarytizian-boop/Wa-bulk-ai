@@ -135,7 +135,11 @@ async function placeOrder(userId, input) {
   // on its automatic retry, so a second attempt returns the order the first one created.
   const clientRef = cleanClientRef(input && input.client_ref);
   if (clientRef) {
-    const prior = await db.one('SELECT * FROM orders WHERE user_id = $1 AND client_ref = $2', [userId, clientRef]);
+    // The column is applied automatically on the first query of a cold start; if this deployment
+    // runs ahead of that catch-up, ordering must still work rather than answer 500.
+    const prior = await db
+      .one('SELECT * FROM orders WHERE user_id = $1 AND client_ref = $2', [userId, clientRef])
+      .catch(() => null);
     if (prior) return prior;
   }
 

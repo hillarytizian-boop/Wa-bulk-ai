@@ -385,9 +385,39 @@ function makePostgres(databaseUrl) {
     return resolving;
   };
 
+  // Columns added after a table shipped are applied on the first query of each cold start. On
+  // serverless nothing else ever runs `initSchema`, so without this a deploy that needs a new column
+  // would answer 500 on that feature until somebody remembered to run scripts/migrate.js by hand.
+  // Every statement is an idempotent ALTER, and a duplicate-column error means it already ran.
+  let schemaReady = null;
+  const ensureSchema = () => {
+    if (!schemaReady) {
+      schemaReady = (async () => {
+        const p = await ensurePool();
+        for (const sql of renderAdditions()) {
+          try {
+            await p.query(sql);
+          } catch (err) {
+            if (err.code !== '42701') throw err; // 42701 = duplicate_column
+          }
+        }
+        return true;
+      })().catch((err) => {
+        schemaReady = null;
+        console.error('[db] schema catch-up failed:', err.message);
+        throw err;
+      });
+    }
+    return schemaReady;
+  };
+
   // A tiny wrapper that behaves like a client but resolves the pool first.
   const lazyClient = {
-    query: async (text, params = []) => (await ensurePool()).query(text, params),
+    query: async (text, params = []) => {
+      const p = await ensurePool();
+      await ensureSchema();
+      return p.query(text, params);
+    },
     connect: async () => (await ensurePool()).connect(),
   };
 
